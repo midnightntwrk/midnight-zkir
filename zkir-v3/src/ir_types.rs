@@ -15,8 +15,8 @@ use midnight_circuits::{
     ecc::foreign::edwards_chip::AssignedForeignEdwardsPoint,
     field::foreign::params::MultiEmulationParams as MEP,
     types::{
-        AssignedByte, AssignedField, AssignedForeignPoint, AssignedNative, AssignedNativePoint,
-        AssignedScalarOfNativeCurve, InnerValue,
+        AssignedBit, AssignedByte, AssignedField, AssignedForeignPoint, AssignedNative,
+        AssignedNativePoint, AssignedScalarOfNativeCurve, InnerValue,
     },
 };
 use midnight_curves::{Fr as JubjubFr, JubjubExtended, JubjubSubgroup, curve25519, k256, p256};
@@ -38,6 +38,9 @@ pub enum IrType {
     /// This is also the base field of Jubjub.
     #[serde(rename = "Scalar<BLS12-381>")]
     Native,
+
+    /// Boolean (true or false).
+    Bool,
 
     /// 32 bytes.
     #[serde(rename = "Bytes<32>")]
@@ -93,6 +96,7 @@ impl IrType {
     pub fn encoded_len(&self) -> usize {
         match self {
             IrType::Native => 1,
+            IrType::Bool => 1,
             IrType::Bytes32 => 2,
             IrType::JubjubPoint => 2,
             IrType::JubjubScalar => 1,
@@ -119,6 +123,9 @@ impl IrType {
 pub enum IrValue {
     /// BLS12-381 scalar field element.
     Native(Fr),
+
+    /// Boolean.
+    Bool(bool),
 
     /// 32 Bytes.
     Bytes32([u8; 32]),
@@ -161,6 +168,7 @@ impl IrValue {
     pub(crate) fn get_type(&self) -> IrType {
         match self {
             IrValue::Native(_) => IrType::Native,
+            IrValue::Bool(_) => IrType::Bool,
             IrValue::Bytes32(_) => IrType::Bytes32,
             IrValue::JubjubPoint(_) => IrType::JubjubPoint,
             IrValue::JubjubScalar(_) => IrType::JubjubScalar,
@@ -182,6 +190,7 @@ impl IrValue {
     pub(crate) fn default(val_t: &IrType) -> Self {
         match val_t {
             IrType::Native => IrValue::Native(Fr::default()),
+            IrType::Bool => IrValue::Bool(bool::default()),
             IrType::Bytes32 => IrValue::Bytes32([u8::default(); 32]),
             IrType::JubjubPoint => IrValue::JubjubPoint(JubjubSubgroup::default()),
             IrType::JubjubScalar => IrValue::JubjubScalar(JubjubFr::default()),
@@ -210,6 +219,7 @@ impl IrValue {
 #[allow(clippy::large_enum_variant)]
 pub enum CircuitValue {
     Native(AssignedNative<F>),
+    Bool(AssignedBit<F>),
     Bytes32([AssignedByte<F>; 32]),
     JubjubPoint(AssignedNativePoint<JubjubExtended>),
     JubjubScalar(AssignedScalarOfNativeCurve<JubjubExtended>),
@@ -231,6 +241,7 @@ impl CircuitValue {
     pub fn value(&self) -> Value<IrValue> {
         match self {
             CircuitValue::Native(x) => x.value().cloned().map(|x| IrValue::Native(Fr(x))),
+            CircuitValue::Bool(b) => b.value().map(IrValue::Bool),
             CircuitValue::Bytes32(bs) => Value::<Vec<u8>>::from_iter(bs.iter().map(|b| b.value()))
                 .map(|b| b.try_into().unwrap())
                 .map(IrValue::Bytes32),
@@ -254,6 +265,7 @@ impl CircuitValue {
     pub fn get_type(&self) -> IrType {
         match self {
             CircuitValue::Native(_) => IrType::Native,
+            CircuitValue::Bool(_) => IrType::Bool,
             CircuitValue::Bytes32(_) => IrType::Bytes32,
             CircuitValue::JubjubPoint(_) => IrType::JubjubPoint,
             CircuitValue::JubjubScalar(_) => IrType::JubjubScalar,
@@ -309,6 +321,7 @@ macro_rules! impl_enum_from_try_from {
 //  - TryFrom<IrValue> for T
 impl_enum_from_try_from!(IrValue, anyhow::Error, anyhow::Error::msg;
     Native => Fr,
+    Bool => bool,
     Bytes32 => [u8; 32],
     JubjubPoint => JubjubSubgroup,
     JubjubScalar => JubjubFr,
@@ -331,6 +344,7 @@ impl_enum_from_try_from!(IrValue, anyhow::Error, anyhow::Error::msg;
 //  - TryFrom<CircuitValue> for T
 impl_enum_from_try_from!(CircuitValue, Error, Error::Synthesis;
     Native => AssignedNative<F>,
+    Bool => AssignedBit<F>,
     Bytes32 => [AssignedByte<F>; 32],
     JubjubPoint => AssignedNativePoint<JubjubExtended>,
     JubjubScalar => AssignedScalarOfNativeCurve<JubjubExtended>,

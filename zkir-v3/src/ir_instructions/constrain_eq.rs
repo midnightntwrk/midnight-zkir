@@ -23,6 +23,7 @@ use crate::{
 /// Constrains off-circuit the given inputs to be equal.
 /// Equality constraint is supported on:
 ///   - `Native`
+///   - `Bool`
 ///   - `Bytes32`
 ///   - `JubjubPoint`
 ///   - `Secp256k1Point`
@@ -60,6 +61,7 @@ pub fn constrain_eq_offcircuit(a: &IrValue, b: &IrValue) -> Result<(), anyhow::E
 /// Constrains in-circuit the given inputs to be equal.
 /// Equality constraint is supported on:
 ///   - `Native`
+///   - `Bool`
 ///   - `Bytes32`
 ///   - `JubjubPoint`
 ///   - `Secp256k1Point`
@@ -84,6 +86,8 @@ pub fn constrain_eq_incircuit(
     use CircuitValue::*;
     match (a, b) {
         (Native(x), Native(y)) => std_lib.assert_equal(layouter, x, y),
+
+        (Bool(a), Bool(b)) => std_lib.assert_equal(layouter, a, b),
 
         (Bytes32(xs), Bytes32(ys)) => xs
             .iter()
@@ -142,6 +146,11 @@ mod tests {
         use IrValue::*;
         let x = Fr(F::random(OsRng));
         assert!(constrain_eq_offcircuit(&Native(x), &Native(x)).is_ok());
+
+        assert!(constrain_eq_offcircuit(&Bool(true), &Bool(true)).is_ok());
+        assert!(constrain_eq_offcircuit(&Bool(false), &Bool(false)).is_ok());
+        assert!(constrain_eq_offcircuit(&Bool(true), &Bool(false)).is_err());
+        assert!(constrain_eq_offcircuit(&Native(x), &Bool(true)).is_err());
 
         let bytes: [u8; 32] = std::array::from_fn(|_| rand::thread_rng().r#gen());
         assert!(constrain_eq_offcircuit(&Bytes32(bytes), &Bytes32(bytes)).is_ok());

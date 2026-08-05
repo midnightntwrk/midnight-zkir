@@ -676,10 +676,7 @@ impl IrSource {
                         .checked_add(l)
                         .filter(|end| *end <= bs.len())
                         .ok_or_else(|| {
-                            anyhow!(
-                                "slice out of bounds: {s}..{s}+{l} into Bytes<{}>",
-                                bs.len()
-                            )
+                            anyhow!("slice out of bounds: {s}..{s}+{l} into Bytes<{}>", bs.len())
                         })?;
                     memory.insert(output.clone(), IrValue::Bytes(bs[s..end].to_vec()));
                 }
@@ -1308,12 +1305,15 @@ impl Relation for IrSource {
                     if l == 0 {
                         return Err(Error::Synthesis("slice length must be at least 1".into()));
                     }
-                    let end = s.checked_add(l).filter(|end| *end <= bs.len()).ok_or_else(|| {
-                        Error::Synthesis(format!(
-                            "slice out of bounds: {s}..{s}+{l} into Bytes<{}>",
-                            bs.len()
-                        ))
-                    })?;
+                    let end = s
+                        .checked_add(l)
+                        .filter(|end| *end <= bs.len())
+                        .ok_or_else(|| {
+                            Error::Synthesis(format!(
+                                "slice out of bounds: {s}..{s}+{l} into Bytes<{}>",
+                                bs.len()
+                            ))
+                        })?;
                     mem_insert(
                         output.clone(),
                         CircuitValue::Bytes(bs[s..end].to_vec()),
@@ -1354,7 +1354,11 @@ impl Relation for IrSource {
                             bs.len()
                         )));
                     }
-                    mem_insert(output.clone(), CircuitValue::Byte(bs[k].clone()), &mut memory)?;
+                    mem_insert(
+                        output.clone(),
+                        CircuitValue::Byte(bs[k].clone()),
+                        &mut memory,
+                    )?;
                 }
                 I::Concat { inputs, output } => {
                     let mut bytes = vec![];

@@ -34,8 +34,8 @@ serialize = { version = "1.0.0", package = "midnight-serialize" }
 transient-crypto = { version = "3.0.0", package = "midnight-transient-crypto", features = ["cli"] }
 
 midnight-proofs = { version = "^0.8.1" }
-midnight-circuits = { version = "^7.2.2" }
-midnight-zk-stdlib = { version = "^2.3.3" }
+midnight-circuits = { version = "^7.2.4" }
+midnight-zk-stdlib = { version = "^2.3.5" }
 
 # Pinned pre-zk-stdlib-v2 versions for backwards-compatible v1 proving.
 transient-crypto-old = { package = "midnight-transient-crypto", version = "^2.2.0" }

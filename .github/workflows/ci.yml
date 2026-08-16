@@ -1,0 +1,159 @@
+name: ZKIR Build and Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - 'main'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 #v5.0.0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+            extra-substituters = https://cache.iog.io file://${{ runner.temp }}/nix-binary-cache
+            accept-flake-config = true
+
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+
+      - name: Configure cargo
+        run: .github/scripts/configure-cargo.sh
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+
+      # Run Cargo Clippy on the whole workspace with all features. This is
+      # important to avoid bitrot of code that is feature gated behind
+      # non-default features.
+      # We still permit certain Clippy rules with `-A` args. since they will be
+      # addressed in upcoming PRs and changes that are currently in progress.
+      - name: Cargo clippy (--all-targets --workspace --all-features --all -- -Dwarnings -Aclippy::type_complexity -Aclippy::mutable_key_type -Aclippy::too_many_arguments -Aclippy::derived_hash_with_manual_eq -Aclippy::unbuffered_bytes)
+        run: MIDNIGHT_PP='' nix develop -c cargo clippy --all-targets --workspace --all-features --all -- -Dwarnings -Aclippy::type_complexity -Aclippy::mutable_key_type -Aclippy::too_many_arguments -Aclippy::derived_hash_with_manual_eq -Aclippy::unbuffered_bytes
+
+      - name: Cargo doc
+        run: MIDNIGHT_PP='' nix develop -c cargo doc --all-features --no-deps
+
+      - name: Cargo audit
+        run: nix develop -c cargo audit
+
+  build-nix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 #v5.0.0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+            extra-substituters = https://cache.iog.io file://${{ runner.temp }}/nix-binary-cache
+            accept-flake-config = true
+
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+
+      - name: Configure cargo
+        run: .github/scripts/configure-cargo.sh
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+
+      - name: Build zkir
+        run: nix build .#zkir
+
+      - name: Build zkir-v3
+        run: nix build .#zkir-v3
+
+      - name: Build test artifacts
+        run: nix build .#test-artifacts
+
+  build-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 #v5.0.0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+            extra-substituters = https://cache.iog.io file://${{ runner.temp }}/nix-binary-cache
+            accept-flake-config = true
+
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+
+      - name: Configure cargo
+        run: .github/scripts/configure-cargo.sh
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+
+      - name: Fix Nix permissions (needed on macos self hosted runner)
+        run: |
+          sudo mkdir -m 0755 -p /nix/var/nix/{profiles,gcroots}/per-user/$USER
+          sudo chown -R $USER:nixbld /nix/var/nix/{profiles,gcroots}/per-user/$USER
+        shell: bash # Ensure bash is used for these commands
+
+      - name: Build and Test (default features)
+        run: |
+          cargo install cargo2junit
+          nix develop -c cargo test --release -- -Z unstable-options --format json --report-time --nocapture --test-threads=1 | tee test-results.json
+          # Filter is a workaround for johnterickson/cargo2junit#85
+          jq -cR 'fromjson? | select( .type != "report" )' test-results.json | cargo2junit > ./target/test-results.xml
+          cp test-results.json ./target/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: "zkir-test-results-${{ matrix.os }}"
+          path: target/test-results*

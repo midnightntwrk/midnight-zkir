@@ -27,7 +27,7 @@
 //!   load JSON IR -> compute commitment over inputs ++ encoded expected
 //!   outputs -> keygen -> prove -> verify against `[binding, commitment]`.
 
-use midnight_zkir_v3::ir_types::IrValue;
+use midnight_zkir::ir_types::IrValue;
 use transient_crypto::curve::Fr;
 
 use crate::common::assert_typed_output_roundtrip;

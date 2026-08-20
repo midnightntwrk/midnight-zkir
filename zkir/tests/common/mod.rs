@@ -31,9 +31,9 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
 
-use midnight_zkir_v3::IrSource;
-use midnight_zkir_v3::ir_instructions::encode::encode_offcircuit;
-use midnight_zkir_v3::ir_types::IrValue;
+use midnight_zkir::IrSource;
+use midnight_zkir::ir_instructions::encode::encode_offcircuit;
+use midnight_zkir::ir_types::IrValue;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serialize::tagged_serialize;

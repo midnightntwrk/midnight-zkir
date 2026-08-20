@@ -99,9 +99,6 @@ jobs:
       - name: Build zkir
         run: nix build .#zkir
 
-      - name: Build zkir-v3
-        run: nix build .#zkir-v3
-
       - name: Build test artifacts
         run: nix build .#test-artifacts
 

@@ -191,6 +191,7 @@
               pkgs.clang
               pkgs.cargo-hack
               pkgs.cargo-audit
+              pkgs.cargo-nextest
               pkgs.wasm-pack
               pkgs.wasm-bindgen-cli_0_2_108
             ];

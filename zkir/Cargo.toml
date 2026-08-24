@@ -10,6 +10,11 @@ description = "Zero-knowledge intermediate representation used for Midnight."
 name = "zkir"
 path = "src/main.rs"
 required-features = ["binary"]
+# This crate and zkir-v3 both ship a binary called `zkir` (the name is part of
+# their packaging contract, see flake.nix), so documenting both would write to
+# the same rustdoc output path. The CLI has no rustdoc worth keeping; excluding
+# the binaries leaves the library docs untouched.
+doc = false
 
 [features]
 binary = ["dep:log", "dep:tracing-subscriber", "dep:clap", "dep:env_logger", "dep:tokio", "dep:indicatif", "dep:console", "dep:futures-executor"]

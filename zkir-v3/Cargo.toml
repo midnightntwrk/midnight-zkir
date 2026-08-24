@@ -10,6 +10,9 @@ publish = false
 name = "zkir"
 path = "src/main.rs"
 required-features = ["binary"]
+# See the matching note in ../zkir/Cargo.toml: both crates ship a `zkir`
+# binary, which collides in `cargo doc`.
+doc = false
 
 [features]
 binary = [

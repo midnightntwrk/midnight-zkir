@@ -222,16 +222,36 @@ impl Arbitrary for IrType {
             1 => 1u32..=MAX_BYTES_LEN,
         ];
 
+        // Grouped by curve family because `prop_oneof!` takes at most ten
+        // arms. The weights are the group sizes, so the overall distribution
+        // stays uniform over all variants; a new curve family is one more arm
+        // weighted by its size.
         prop_oneof![
-            Just(IrType::Native),
-            Just(IrType::Bool),
-            Just(IrType::Byte),
-            bytes_len.prop_map(IrType::Bytes),
-            Just(IrType::JubjubPoint),
-            Just(IrType::JubjubScalar),
-            Just(IrType::Secp256k1Point),
-            Just(IrType::Secp256k1Base),
-            Just(IrType::Secp256k1Scalar),
+            4 => prop_oneof![
+                Just(IrType::Native),
+                Just(IrType::Bool),
+                Just(IrType::Byte),
+                bytes_len.prop_map(IrType::Bytes),
+            ],
+            2 => prop_oneof![
+                Just(IrType::JubjubPoint),
+                Just(IrType::JubjubScalar),
+            ],
+            3 => prop_oneof![
+                Just(IrType::Secp256k1Point),
+                Just(IrType::Secp256k1Base),
+                Just(IrType::Secp256k1Scalar),
+            ],
+            3 => prop_oneof![
+                Just(IrType::Secp256r1Point),
+                Just(IrType::Secp256r1Base),
+                Just(IrType::Secp256r1Scalar),
+            ],
+            3 => prop_oneof![
+                Just(IrType::Curve25519Point),
+                Just(IrType::Curve25519Base),
+                Just(IrType::Curve25519Scalar),
+            ],
         ]
         .boxed()
     }
@@ -555,5 +575,79 @@ mod tests {
             r#""Scalar<BLS12-381>""#
         );
         assert_eq!(serde_json::to_string(&IrType::Byte).unwrap(), r#""Byte""#);
+    }
+
+    /// Guards the hand-written [`Arbitrary`] impl, which is easy to extend
+    /// `IrType` without noticing: a variant it forgets is silently dropped from
+    /// every proptest that generates an `Instruction`.
+    ///
+    /// The `match` makes forgetting a compile error, and the sampling below
+    /// makes it a test failure even if the `match` is updated but the strategy
+    /// is not.
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn arbitrary_generates_every_variant() {
+        use proptest::strategy::ValueTree;
+        use proptest::test_runner::TestRunner;
+        use std::collections::HashSet;
+        use std::mem::discriminant;
+
+        let all = [
+            IrType::Native,
+            IrType::Bool,
+            IrType::Byte,
+            IrType::Bytes(1),
+            IrType::JubjubPoint,
+            IrType::JubjubScalar,
+            IrType::Secp256k1Point,
+            IrType::Secp256k1Base,
+            IrType::Secp256k1Scalar,
+            IrType::Secp256r1Point,
+            IrType::Secp256r1Base,
+            IrType::Secp256r1Scalar,
+            IrType::Curve25519Point,
+            IrType::Curve25519Base,
+            IrType::Curve25519Scalar,
+        ];
+
+        // Exhaustiveness guard: adding a variant to `IrType` fails to compile
+        // until it is listed in `all` above and in the `Arbitrary` impl.
+        for t in &all {
+            match t {
+                IrType::Native
+                | IrType::Bool
+                | IrType::Byte
+                | IrType::Bytes(_)
+                | IrType::JubjubPoint
+                | IrType::JubjubScalar
+                | IrType::Secp256k1Point
+                | IrType::Secp256k1Base
+                | IrType::Secp256k1Scalar
+                | IrType::Secp256r1Point
+                | IrType::Secp256r1Base
+                | IrType::Secp256r1Scalar
+                | IrType::Curve25519Point
+                | IrType::Curve25519Base
+                | IrType::Curve25519Scalar => {}
+            }
+        }
+
+        // Uniform over 15 variants, so 2048 draws miss one with probability
+        // (14/15)^2048, around 1e-59. `deterministic()` fixes the seed, so this
+        // does not flake.
+        let strategy = IrType::arbitrary();
+        let mut runner = TestRunner::deterministic();
+        let mut seen: HashSet<_> = HashSet::new();
+        for _ in 0..2048 {
+            let value = strategy.new_tree(&mut runner).unwrap().current();
+            seen.insert(discriminant(&value));
+        }
+
+        for t in &all {
+            assert!(
+                seen.contains(&discriminant(t)),
+                "Arbitrary for IrType never generates {t:?}"
+            );
+        }
     }
 }

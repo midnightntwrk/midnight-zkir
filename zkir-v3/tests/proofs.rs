@@ -1934,7 +1934,7 @@ mod proof_tests {
         let inputs: Vec<transient_crypto::curve::Fr> = [
             encode(IrValue::Secp256r1Base(base_val)),
             encode(IrValue::Secp256r1Scalar(scalar_val)),
-            encode(IrValue::Bytes32(raw_bytes)),
+            encode(IrValue::Bytes(raw_bytes.to_vec())),
         ]
         .concat();
 
@@ -2341,7 +2341,7 @@ mod proof_tests {
         let inputs: Vec<transient_crypto::curve::Fr> = [
             encode(IrValue::Curve25519Base(base_val)),
             encode(IrValue::Curve25519Scalar(scalar_val)),
-            encode(IrValue::Bytes32(raw_bytes)),
+            encode(IrValue::Bytes(raw_bytes.to_vec())),
         ]
         .concat();
 

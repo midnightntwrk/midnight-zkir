@@ -194,27 +194,27 @@ mod tests {
         assert_eq!(bytes2, bytes);
 
         let x = Secp256r1Base(p256::Fp::random(OsRng));
-        let bytes: [u8; 32] = into_bytes32_offcircuit(&x).unwrap().try_into().unwrap();
+        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
         let y = from_bytes32_offcircuit(&IrType::Secp256r1Base, &bytes).unwrap();
-        let bytes2: [u8; 32] = into_bytes32_offcircuit(&y).unwrap().try_into().unwrap();
+        let bytes2 = to_arr(into_bytes32_offcircuit(&y).unwrap());
         assert_eq!(bytes2, bytes);
 
         let x = Secp256r1Scalar(p256::Fq::random(OsRng));
-        let bytes: [u8; 32] = into_bytes32_offcircuit(&x).unwrap().try_into().unwrap();
+        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
         let y = from_bytes32_offcircuit(&IrType::Secp256r1Scalar, &bytes).unwrap();
-        let bytes2: [u8; 32] = into_bytes32_offcircuit(&y).unwrap().try_into().unwrap();
+        let bytes2 = to_arr(into_bytes32_offcircuit(&y).unwrap());
         assert_eq!(bytes2, bytes);
 
         let x = Curve25519Base(curve25519::Fp::random(OsRng));
-        let bytes: [u8; 32] = into_bytes32_offcircuit(&x).unwrap().try_into().unwrap();
+        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
         let y = from_bytes32_offcircuit(&IrType::Curve25519Base, &bytes).unwrap();
-        let bytes2: [u8; 32] = into_bytes32_offcircuit(&y).unwrap().try_into().unwrap();
+        let bytes2 = to_arr(into_bytes32_offcircuit(&y).unwrap());
         assert_eq!(bytes2, bytes);
 
         let x = Curve25519Scalar(<curve25519::Scalar as Field>::random(OsRng));
-        let bytes: [u8; 32] = into_bytes32_offcircuit(&x).unwrap().try_into().unwrap();
+        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
         let y = from_bytes32_offcircuit(&IrType::Curve25519Scalar, &bytes).unwrap();
-        let bytes2: [u8; 32] = into_bytes32_offcircuit(&y).unwrap().try_into().unwrap();
+        let bytes2 = to_arr(into_bytes32_offcircuit(&y).unwrap());
         assert_eq!(bytes2, bytes);
     }
 

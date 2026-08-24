@@ -68,5 +68,31 @@ pub fn assign_constant_incircuit(
         IrValue::Secp256k1Scalar(s) => (std_lib.secp256k1().scalar_field_chip())
             .assign_fixed(layouter, *s)
             .map(CircuitValue::Secp256k1Scalar),
+
+        IrValue::Secp256r1Point(p) => std_lib
+            .p256()
+            .assign_fixed(layouter, *p)
+            .map(CircuitValue::Secp256r1Point),
+
+        IrValue::Secp256r1Base(s) => (std_lib.p256().base_field_chip())
+            .assign_fixed(layouter, *s)
+            .map(CircuitValue::Secp256r1Base),
+
+        IrValue::Secp256r1Scalar(s) => (std_lib.p256().scalar_field_chip())
+            .assign_fixed(layouter, *s)
+            .map(CircuitValue::Secp256r1Scalar),
+
+        IrValue::Curve25519Point(p) => std_lib
+            .curve25519()
+            .assign_fixed(layouter, *p)
+            .map(CircuitValue::Curve25519Point),
+
+        IrValue::Curve25519Base(s) => (std_lib.curve25519().base_field_chip())
+            .assign_fixed(layouter, *s)
+            .map(CircuitValue::Curve25519Base),
+
+        IrValue::Curve25519Scalar(s) => (std_lib.curve25519().scalar_field_chip())
+            .assign_fixed(layouter, *s)
+            .map(CircuitValue::Curve25519Scalar),
     }
 }

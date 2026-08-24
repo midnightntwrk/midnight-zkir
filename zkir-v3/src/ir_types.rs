@@ -87,27 +87,21 @@ pub enum IrType {
     Secp256k1Scalar,
 
     /// Point of the Secp256r1 elliptic curve, also known as P256.
-    #[serde(rename = "Point<Secp256r1>")]
     Secp256r1Point,
 
     /// Element of the base field of Secp256r1.
-    #[serde(rename = "Base<Secp256r1>")]
     Secp256r1Base,
 
     /// Element of the scalar field of Secp256r1.
-    #[serde(rename = "Scalar<Secp256r1>")]
     Secp256r1Scalar,
 
     /// Point of the Curve25519 elliptic curve.
-    #[serde(rename = "Point<Curve25519>")]
     Curve25519Point,
 
     /// Element of the base field of Curve25519.
-    #[serde(rename = "Base<Curve25519>")]
     Curve25519Base,
 
     /// Element of the scalar field of Curve25519.
-    #[serde(rename = "Scalar<Curve25519>")]
     Curve25519Scalar,
 }
 
@@ -150,6 +144,12 @@ impl IrType {
             IrType::Secp256k1Point => "Point<Secp256k1>".to_string(),
             IrType::Secp256k1Base => "Base<Secp256k1>".to_string(),
             IrType::Secp256k1Scalar => "Scalar<Secp256k1>".to_string(),
+            IrType::Secp256r1Point => "Point<Secp256r1>".to_string(),
+            IrType::Secp256r1Base => "Base<Secp256r1>".to_string(),
+            IrType::Secp256r1Scalar => "Scalar<Secp256r1>".to_string(),
+            IrType::Curve25519Point => "Point<Curve25519>".to_string(),
+            IrType::Curve25519Base => "Base<Curve25519>".to_string(),
+            IrType::Curve25519Scalar => "Scalar<Curve25519>".to_string(),
         }
     }
 
@@ -166,6 +166,12 @@ impl IrType {
             "Point<Secp256k1>" => IrType::Secp256k1Point,
             "Base<Secp256k1>" => IrType::Secp256k1Base,
             "Scalar<Secp256k1>" => IrType::Secp256k1Scalar,
+            "Point<Secp256r1>" => IrType::Secp256r1Point,
+            "Base<Secp256r1>" => IrType::Secp256r1Base,
+            "Scalar<Secp256r1>" => IrType::Secp256r1Scalar,
+            "Point<Curve25519>" => IrType::Curve25519Point,
+            "Base<Curve25519>" => IrType::Curve25519Base,
+            "Scalar<Curve25519>" => IrType::Curve25519Scalar,
             other => {
                 let inner = other.strip_prefix("Bytes<")?.strip_suffix('>')?;
                 // Reject non-canonical integers: empty, non-digits, or a

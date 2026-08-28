@@ -274,7 +274,9 @@ pub fn jubjub_scalar_from_biguint(
 #[cfg(test)]
 mod tests {
     use group::{Group, ff::Field};
-    use midnight_curves::{JubjubSubgroup, k256::K256};
+    use midnight_curves::{
+        JubjubSubgroup, curve25519::Curve25519Subgroup, k256::K256, p256::P256,
+    };
     use rand_chacha::rand_core::OsRng;
 
     use super::*;
@@ -352,6 +354,12 @@ mod tests {
             IrValue::Secp256k1Point(K256::generator()),
             IrValue::Secp256k1Base(-k256::Fp::ONE),
             IrValue::Secp256k1Scalar(-k256::Fq::ONE),
+            IrValue::Secp256r1Point(P256::generator()),
+            IrValue::Secp256r1Base(-p256::Fp::ONE),
+            IrValue::Secp256r1Scalar(-p256::Fq::ONE),
+            IrValue::Curve25519Point(Curve25519Subgroup::generator()),
+            IrValue::Curve25519Base(-curve25519::Fp::ONE),
+            IrValue::Curve25519Scalar(-<curve25519::Scalar as Field>::ONE),
         ];
         for value in values {
             let val_t = value.get_type();
@@ -381,6 +389,24 @@ mod tests {
             IrValue::Secp256k1Scalar(k256::Fq::ZERO),
             IrValue::Secp256k1Scalar(-k256::Fq::ONE),
             IrValue::Secp256k1Scalar(k256::Fq::random(OsRng)),
+            IrValue::Secp256r1Point(P256::identity()),
+            IrValue::Secp256r1Point(P256::generator()),
+            IrValue::Secp256r1Point(P256::random(OsRng)),
+            IrValue::Secp256r1Base(p256::Fp::ZERO),
+            IrValue::Secp256r1Base(-p256::Fp::ONE),
+            IrValue::Secp256r1Base(p256::Fp::random(OsRng)),
+            IrValue::Secp256r1Scalar(p256::Fq::ZERO),
+            IrValue::Secp256r1Scalar(-p256::Fq::ONE),
+            IrValue::Secp256r1Scalar(p256::Fq::random(OsRng)),
+            IrValue::Curve25519Point(Curve25519Subgroup::identity()),
+            IrValue::Curve25519Point(Curve25519Subgroup::generator()),
+            IrValue::Curve25519Point(Curve25519Subgroup::random(OsRng)),
+            IrValue::Curve25519Base(curve25519::Fp::ZERO),
+            IrValue::Curve25519Base(-curve25519::Fp::ONE),
+            IrValue::Curve25519Base(curve25519::Fp::random(OsRng)),
+            IrValue::Curve25519Scalar(<curve25519::Scalar as Field>::ZERO),
+            IrValue::Curve25519Scalar(-<curve25519::Scalar as Field>::ONE),
+            IrValue::Curve25519Scalar(<curve25519::Scalar as Field>::random(OsRng)),
         ];
         for value in values {
             let val_t = value.get_type();
@@ -454,5 +480,65 @@ mod tests {
         let mut tampered = encoded.clone();
         tampered[0] = Fr(encoded[0].0 + F::ONE);
         assert!(decode_offcircuit(&tampered, &IrType::Secp256k1Point).is_err());
+    }
+
+    // Same > modulus attack as the secp256k1 case, against the p256 group order.
+    #[test]
+    fn decode_rejects_non_canonical_secp256r1_scalar() {
+        // (7 - 1) + q, as little-endian 64-bit limbs, where q is the p256 group order.
+        let limbs: [u64; 4] = [
+            0xF3B9_CAC2_FC63_2551 + 6,
+            0xBCE6_FAAD_A717_9E84,
+            0xFFFF_FFFF_0000_0000,
+            0xFFFF_FFFF_FFFF_FFFF,
+        ];
+        let mut buf = [0u8; 32];
+        for (i, limb) in limbs[..3].iter().enumerate() {
+            buf[8 * i..8 * (i + 1)].copy_from_slice(&limb.to_le_bytes());
+        }
+        let tampered = vec![Fr(F::from_bytes_le(&buf).unwrap()), Fr(F::from(limbs[3]))];
+        assert_ne!(
+            tampered,
+            raw(&IrValue::Secp256r1Scalar(p256::Fq::from(7u64)))
+        );
+        assert!(decode_offcircuit(&tampered, &IrType::Secp256r1Scalar).is_err());
+    }
+
+    // A secp256r1 point carries the same "is identity" flag as secp256k1, so
+    // the same coordinate-ignoring attack applies.
+    #[test]
+    fn decode_rejects_non_canonical_secp256r1_identity() {
+        let value = IrValue::Secp256r1Point(P256::identity());
+        let encoded = raw(&value);
+        assert_eq!(*encoded.last().unwrap(), Fr::from(1u64));
+        // Garbage coordinates, identity flag still set.
+        let mut tampered = encoded.clone();
+        tampered[0] = Fr(encoded[0].0 + F::ONE);
+        assert!(decode_offcircuit(&tampered, &IrType::Secp256r1Point).is_err());
+    }
+
+    // The curve25519 (ed25519) scalar order l < 2^253 also fits in 4 x 64-bit
+    // limbs, so adding l to a canonical encoding reduces to the same scalar but
+    // re-encodes differently.
+    #[test]
+    fn decode_rejects_non_canonical_curve25519_scalar() {
+        // (7 - 1) + l, as little-endian 64-bit limbs, where l is the curve25519
+        // scalar order (2^252 + 27742317777372353535851937790883648493).
+        let limbs: [u64; 4] = [
+            0x5812_631A_5CF5_D3ED + 6,
+            0x14DE_F9DE_A2F7_9CD6,
+            0x0000_0000_0000_0000,
+            0x1000_0000_0000_0000,
+        ];
+        let mut buf = [0u8; 32];
+        for (i, limb) in limbs[..3].iter().enumerate() {
+            buf[8 * i..8 * (i + 1)].copy_from_slice(&limb.to_le_bytes());
+        }
+        let tampered = vec![Fr(F::from_bytes_le(&buf).unwrap()), Fr(F::from(limbs[3]))];
+        assert_ne!(
+            tampered,
+            raw(&IrValue::Curve25519Scalar(curve25519::Scalar::from(7u64)))
+        );
+        assert!(decode_offcircuit(&tampered, &IrType::Curve25519Scalar).is_err());
     }
 }

@@ -13,6 +13,7 @@
 
 use crate::ir_instructions::add::{add_incircuit, add_offcircuit};
 use crate::ir_instructions::assign::assign_incircuit;
+use crate::ir_instructions::assign_constant::assign_constant_incircuit;
 use crate::ir_instructions::constrain_eq::{constrain_eq_incircuit, constrain_eq_offcircuit};
 use crate::ir_instructions::ec_mul::{ec_mul_incircuit, ec_mul_offcircuit};
 use crate::ir_instructions::encode::{
@@ -32,7 +33,7 @@ use crate::ir_instructions::inv::{inv_incircuit, inv_offcircuit};
 use crate::ir_instructions::mul::{mul_incircuit, mul_offcircuit};
 use crate::ir_instructions::neg::{neg_incircuit, neg_offcircuit};
 use crate::ir_instructions::select::{select_incircuit, select_offcircuit};
-use crate::ir_types::{CircuitValue, IrType, IrValue};
+use crate::ir_types::{CircuitValue, IrType, IrValue, MAX_BYTES_LEN};
 
 use super::ir::{Identifier, Instruction as I, IrSource, Operand};
 use anyhow::{anyhow, bail};
@@ -53,7 +54,7 @@ use midnight_proofs::{
 use midnight_zk_stdlib::{Relation, ZkStdLib, ZkStdLibArch};
 use num_bigint::BigUint;
 use serialize::{Deserializable, Serializable, VecExt, tagged_deserialize, tagged_serialize};
-use sha2::Sha256;
+use sha2::{Sha256, Sha512};
 use sha3::{Digest, Keccak256};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -74,6 +75,30 @@ pub struct Preprocessed {
     pub pi_skips: Vec<Option<usize>>,
     pub binding_input: outer::Scalar,
     pub comm_comm: Option<(outer::Scalar, outer::Scalar)>,
+}
+
+/// Converts an off-circuit `Bytes(32)` value into a fixed 32-byte array,
+/// erroring if the value is not exactly 32 bytes long. Used by the
+/// `Bytes32`-specific instructions.
+fn ir_value_to_bytes32(value: IrValue) -> Result<[u8; 32], anyhow::Error> {
+    let bytes: Vec<u8> = value.try_into()?;
+    let len = bytes.len();
+    bytes
+        .try_into()
+        .map_err(|_| anyhow!("expected a Bytes<32> value, got Bytes<{len}>"))
+}
+
+/// Converts an in-circuit `Bytes(32)` value into a fixed 32-byte array,
+/// erroring if the value is not exactly 32 bytes long. Used by the
+/// `Bytes32`-specific instructions.
+fn circuit_value_to_bytes32(
+    value: CircuitValue,
+) -> Result<[AssignedByte<outer::Scalar>; 32], Error> {
+    let bytes: Vec<AssignedByte<outer::Scalar>> = value.try_into()?;
+    let len = bytes.len();
+    bytes
+        .try_into()
+        .map_err(|_| Error::Synthesis(format!("expected a Bytes<32> value, got Bytes<{len}>")))
 }
 
 fn fab_decode_to_bytes(
@@ -250,6 +275,23 @@ impl IrSource {
             })
         };
 
+        let resolve_bool_list = |memory: &HashMap<Identifier, IrValue>,
+                                 operands: &[Operand]|
+         -> Result<Vec<bool>, anyhow::Error> {
+            if operands.is_empty() {
+                bail!("Boolean gate requires at least one input");
+            }
+            operands
+                .iter()
+                .map(|op| {
+                    let val = resolve_operand(memory, op)?;
+                    let t = val.get_type();
+                    bool::try_from(val)
+                        .map_err(|_| anyhow!("Boolean gate expects Bool inputs, found {t:?}"))
+                })
+                .collect()
+        };
+
         let resolve_operand_bits =
             |memory: &HashMap<Identifier, IrValue>, operand: &Operand, constrain: Option<u32>| {
                 resolve_operand(memory, operand).and_then(|val| {
@@ -322,6 +364,20 @@ impl IrSource {
                 I::Not { a, output } => {
                     let result = IrValue::Native((!resolve_operand_bool(&memory, a)?).into());
                     memory.insert(output.clone(), result);
+                }
+                I::And { inputs, output } => {
+                    let result = resolve_bool_list(&memory, inputs)?.into_iter().all(|b| b);
+                    memory.insert(output.clone(), IrValue::Bool(result));
+                }
+                I::Or { inputs, output } => {
+                    let result = resolve_bool_list(&memory, inputs)?.into_iter().any(|b| b);
+                    memory.insert(output.clone(), IrValue::Bool(result));
+                }
+                I::Xor { inputs, output } => {
+                    let result = resolve_bool_list(&memory, inputs)?
+                        .into_iter()
+                        .fold(false, |acc, b| acc ^ b);
+                    memory.insert(output.clone(), IrValue::Bool(result));
                 }
                 I::ConstrainEq { a, b } => {
                     let a = resolve_operand(&memory, a)?;
@@ -484,6 +540,11 @@ impl IrSource {
                     alignment,
                     inputs,
                     output,
+                }
+                | I::Sha512 {
+                    alignment,
+                    inputs,
+                    output,
                 } => {
                     let inputs = inputs
                         .iter()
@@ -497,12 +558,13 @@ impl IrSource {
                     let mut repr = Vec::new();
                     ValueReprAlignedValue(value).binary_repr(&mut repr);
                     trace!(bytes = ?repr, "bytes decoded out-of-circuit");
-                    let hash_output: [u8; 32] = match ins {
-                        I::PersistentHash { .. } => Sha256::digest(&repr).into(),
-                        I::Keccak256 { .. } => Keccak256::digest(&repr).into(),
+                    let hash_output: Vec<u8> = match ins {
+                        I::PersistentHash { .. } => Sha256::digest(&repr).to_vec(),
+                        I::Keccak256 { .. } => Keccak256::digest(&repr).to_vec(),
+                        I::Sha512 { .. } => Sha512::digest(&repr).to_vec(),
                         _ => unreachable!(),
                     };
-                    memory.insert(output.clone(), IrValue::Bytes32(hash_output));
+                    memory.insert(output.clone(), IrValue::Bytes(hash_output));
                 }
                 I::Impact { guard, inputs } => {
                     let count = inputs.len();
@@ -589,19 +651,38 @@ impl IrSource {
                     output,
                 } => {
                     let bytes = resolve_operand(&memory, bytes)?;
-                    let bytes: [u8; 32] = bytes.try_into()?;
+                    let bytes = ir_value_to_bytes32(bytes)?;
                     let x = from_bytes32_offcircuit(val_t, &bytes)?;
                     memory.insert(output.clone(), x);
                 }
-                I::ReverseBytes { bytes, output } => {
+                I::Reverse { bytes, output } => {
                     let bytes = resolve_operand(&memory, bytes)?;
-                    let mut bytes: [u8; 32] = bytes.try_into()?;
+                    let mut bytes: Vec<u8> = bytes.try_into()?;
                     bytes.reverse();
-                    memory.insert(output.clone(), IrValue::Bytes32(bytes));
+                    memory.insert(output.clone(), IrValue::Bytes(bytes));
+                }
+                I::Slice {
+                    bytes,
+                    start,
+                    len,
+                    output,
+                } => {
+                    let bs: Vec<u8> = resolve_operand(&memory, bytes)?.try_into()?;
+                    let (s, l) = (*start as usize, *len as usize);
+                    if l == 0 {
+                        bail!("slice length must be at least 1");
+                    }
+                    let end = s
+                        .checked_add(l)
+                        .filter(|end| *end <= bs.len())
+                        .ok_or_else(|| {
+                            anyhow!("slice out of bounds: {s}..{s}+{l} into Bytes<{}>", bs.len())
+                        })?;
+                    memory.insert(output.clone(), IrValue::Bytes(bs[s..end].to_vec()));
                 }
                 I::Bytes32IntoLowHigh { bytes, outputs } => {
                     let bytes = resolve_operand(&memory, bytes)?;
-                    let mut bytes: [u8; 32] = bytes.try_into()?;
+                    let mut bytes = ir_value_to_bytes32(bytes)?;
                     let high = IrValue::Native(Fr::from(bytes[31]));
                     bytes[31] = 0;
                     let low = from_bytes32_offcircuit(&IrType::Native, &bytes)?;
@@ -611,8 +692,8 @@ impl IrSource {
                 I::Bytes32FromLowHigh { inputs, output } => {
                     let low = resolve_operand(&memory, &inputs.0)?;
                     let high = resolve_operand(&memory, &inputs.1)?;
-                    let bytes_low: [u8; 32] = into_bytes32_offcircuit(&low)?.try_into()?;
-                    let bytes_high: [u8; 32] = into_bytes32_offcircuit(&high)?.try_into()?;
+                    let bytes_low = ir_value_to_bytes32(into_bytes32_offcircuit(&low)?)?;
+                    let bytes_high = ir_value_to_bytes32(into_bytes32_offcircuit(&high)?)?;
                     if bytes_low[31] != 0 || bytes_high[1..].iter().any(|b| *b != 0) {
                         bail!(
                             "Bytes32FromLowHigh: low operand must fit in 31 bytes (be less than 2^248) and high operand must fit in a single byte (be less than 256)"
@@ -620,7 +701,50 @@ impl IrSource {
                     }
                     let mut out_bytes = bytes_low;
                     out_bytes[31] = bytes_high[0];
-                    memory.insert(output.clone(), IrValue::Bytes32(out_bytes));
+                    memory.insert(output.clone(), IrValue::Bytes(out_bytes.to_vec()));
+                }
+                I::Nth {
+                    bytes,
+                    index,
+                    output,
+                } => {
+                    let bs: Vec<u8> = resolve_operand(&memory, bytes)?.try_into()?;
+                    let k = *index as usize;
+                    if k >= bs.len() {
+                        bail!("nth out of bounds: index {k} into Bytes<{}>", bs.len());
+                    }
+                    memory.insert(output.clone(), IrValue::Byte(bs[k]));
+                }
+                I::Concat { inputs, output } => {
+                    let mut bytes = vec![];
+                    for op in inputs {
+                        match resolve_operand(&memory, op)? {
+                            IrValue::Byte(b) => bytes.push(b),
+                            IrValue::Bytes(bs) => bytes.extend(bs),
+                            other => bail!(
+                                "Concat expects Byte or Bytes inputs, found {:?}",
+                                other.get_type()
+                            ),
+                        }
+                    }
+                    if bytes.is_empty() {
+                        bail!("Concat requires at least one byte of input");
+                    }
+                    if bytes.len() > MAX_BYTES_LEN as usize {
+                        bail!(
+                            "Concat result length {} exceeds MAX_BYTES_LEN ({MAX_BYTES_LEN})",
+                            bytes.len()
+                        );
+                    }
+                    memory.insert(output.clone(), IrValue::Bytes(bytes));
+                }
+                I::LoadConstant {
+                    val_t,
+                    encoding,
+                    output,
+                } => {
+                    let value = decode_offcircuit(encoding, val_t)?;
+                    memory.insert(output.clone(), value);
                 }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {
@@ -756,6 +880,26 @@ impl Relation for IrSource {
                     std.assign_fixed(layouter, imm.0).map(CircuitValue::Native)
                 }
             }
+        }
+
+        fn resolve_bit_list(
+            std: &ZkStdLib,
+            layouter: &mut impl Layouter<outer::Scalar>,
+            memory: &HashMap<Identifier, CircuitValue>,
+            operands: &[Operand],
+        ) -> Result<Vec<AssignedBit<outer::Scalar>>, Error> {
+            if operands.is_empty() {
+                return Err(Error::Synthesis(
+                    "Boolean gate requires at least one input".into(),
+                ));
+            }
+            operands
+                .iter()
+                .map(|op| {
+                    let val = resolve_operand(std, layouter, memory, op)?;
+                    AssignedBit::try_from(val)
+                })
+                .collect()
         }
 
         let mem_insert = |id: Identifier,
@@ -899,6 +1043,11 @@ impl Relation for IrSource {
                     alignment,
                     inputs,
                     output,
+                }
+                | I::Sha512 {
+                    alignment,
+                    inputs,
+                    output,
                 } => {
                     let mut resolved_inputs = Vec::new();
                     for inp in inputs {
@@ -909,13 +1058,14 @@ impl Relation for IrSource {
                     let inputs = resolved_inputs;
                     let bytes = fab_decode_to_bytes(std, layouter, alignment, &inputs)?;
                     let hash_output = match ins {
-                        I::PersistentHash { .. } => std.sha2_256(layouter, &bytes)?,
-                        I::Keccak256 { .. } => std.keccak_256(layouter, &bytes)?,
+                        I::PersistentHash { .. } => std.sha2_256(layouter, &bytes)?.to_vec(),
+                        I::Keccak256 { .. } => std.keccak_256(layouter, &bytes)?.to_vec(),
+                        I::Sha512 { .. } => std.sha2_512(layouter, &bytes)?.to_vec(),
                         _ => unreachable!(),
                     };
                     mem_insert(
                         output.clone(),
-                        CircuitValue::Bytes32(hash_output),
+                        CircuitValue::Bytes(hash_output),
                         &mut memory,
                     )?;
                 }
@@ -954,6 +1104,21 @@ impl Relation for IrSource {
                     let bit: AssignedBit<_> = std.convert(layouter, &a)?;
                     let neg_bit = std.not(layouter, &bit)?;
                     let result = CircuitValue::Native(std.convert(layouter, &neg_bit)?);
+                    mem_insert(output.clone(), result, &mut memory)?;
+                }
+                I::And { inputs, output } => {
+                    let bits = resolve_bit_list(std, layouter, &memory, inputs)?;
+                    let result = CircuitValue::Bool(std.and(layouter, &bits)?);
+                    mem_insert(output.clone(), result, &mut memory)?;
+                }
+                I::Or { inputs, output } => {
+                    let bits = resolve_bit_list(std, layouter, &memory, inputs)?;
+                    let result = CircuitValue::Bool(std.or(layouter, &bits)?);
+                    mem_insert(output.clone(), result, &mut memory)?;
+                }
+                I::Xor { inputs, output } => {
+                    let bits = resolve_bit_list(std, layouter, &memory, inputs)?;
+                    let result = CircuitValue::Bool(std.xor(layouter, &bits)?);
                     mem_insert(output.clone(), result, &mut memory)?;
                 }
                 I::LessThan { a, b, bits, output } => {
@@ -1118,19 +1283,46 @@ impl Relation for IrSource {
                     output,
                 } => {
                     let bytes = resolve_operand(std, layouter, &memory, bytes)?;
-                    let bytes: [AssignedByte<outer::Scalar>; 32] = bytes.try_into()?;
+                    let bytes = circuit_value_to_bytes32(bytes)?;
                     let x = from_bytes32_incircuit(std, layouter, val_t, &bytes)?;
                     memory.insert(output.clone(), x);
                 }
-                I::ReverseBytes { bytes, output } => {
+                I::Reverse { bytes, output } => {
                     let bytes = resolve_operand(std, layouter, &memory, bytes)?;
-                    let mut bytes: [AssignedByte<outer::Scalar>; 32] = bytes.try_into()?;
+                    let mut bytes: Vec<AssignedByte<outer::Scalar>> = bytes.try_into()?;
                     bytes.reverse();
-                    memory.insert(output.clone(), CircuitValue::Bytes32(bytes));
+                    memory.insert(output.clone(), CircuitValue::Bytes(bytes));
+                }
+                I::Slice {
+                    bytes,
+                    start,
+                    len,
+                    output,
+                } => {
+                    let bs: Vec<AssignedByte<outer::Scalar>> =
+                        resolve_operand(std, layouter, &memory, bytes)?.try_into()?;
+                    let (s, l) = (*start as usize, *len as usize);
+                    if l == 0 {
+                        return Err(Error::Synthesis("slice length must be at least 1".into()));
+                    }
+                    let end = s
+                        .checked_add(l)
+                        .filter(|end| *end <= bs.len())
+                        .ok_or_else(|| {
+                            Error::Synthesis(format!(
+                                "slice out of bounds: {s}..{s}+{l} into Bytes<{}>",
+                                bs.len()
+                            ))
+                        })?;
+                    mem_insert(
+                        output.clone(),
+                        CircuitValue::Bytes(bs[s..end].to_vec()),
+                        &mut memory,
+                    )?;
                 }
                 I::Bytes32IntoLowHigh { bytes, outputs } => {
                     let bytes = resolve_operand(std, layouter, &memory, bytes)?;
-                    let mut bytes: [AssignedByte<outer::Scalar>; 32] = bytes.try_into()?;
+                    let mut bytes = circuit_value_to_bytes32(bytes)?;
                     let high = CircuitValue::Native(std.convert(layouter, &bytes[31])?);
                     bytes[31] = std.assign_fixed(layouter, 0u8)?;
                     let low = from_bytes32_incircuit(std, layouter, &IrType::Native, &bytes)?;
@@ -1141,12 +1333,69 @@ impl Relation for IrSource {
                     let low = resolve_operand(std, layouter, &memory, &inputs.0)?;
                     let high: AssignedNative<_> =
                         resolve_operand(std, layouter, &memory, &inputs.1)?.try_into()?;
-                    let bytes_low: [AssignedByte<outer::Scalar>; 32] =
-                        into_bytes32_incircuit(std, layouter, &low)?.try_into()?;
+                    let bytes_low =
+                        circuit_value_to_bytes32(into_bytes32_incircuit(std, layouter, &low)?)?;
                     std.assert_equal_to_fixed(layouter, &bytes_low[31], 0u8)?;
                     let mut out_bytes = bytes_low;
                     out_bytes[31] = std.convert(layouter, &high)?;
-                    memory.insert(output.clone(), CircuitValue::Bytes32(out_bytes));
+                    memory.insert(output.clone(), CircuitValue::Bytes(out_bytes.to_vec()));
+                }
+                I::Nth {
+                    bytes,
+                    index,
+                    output,
+                } => {
+                    let bs: Vec<AssignedByte<outer::Scalar>> =
+                        resolve_operand(std, layouter, &memory, bytes)?.try_into()?;
+                    let k = *index as usize;
+                    if k >= bs.len() {
+                        return Err(Error::Synthesis(format!(
+                            "nth out of bounds: index {k} into Bytes<{}>",
+                            bs.len()
+                        )));
+                    }
+                    mem_insert(
+                        output.clone(),
+                        CircuitValue::Byte(bs[k].clone()),
+                        &mut memory,
+                    )?;
+                }
+                I::Concat { inputs, output } => {
+                    let mut bytes = vec![];
+                    for op in inputs {
+                        match resolve_operand(std, layouter, &memory, op)? {
+                            CircuitValue::Byte(b) => bytes.push(b),
+                            CircuitValue::Bytes(bs) => bytes.extend(bs),
+                            other => {
+                                return Err(Error::Synthesis(format!(
+                                    "Concat expects Byte or Bytes inputs, found {:?}",
+                                    other.get_type()
+                                )));
+                            }
+                        }
+                    }
+                    if bytes.is_empty() {
+                        return Err(Error::Synthesis(
+                            "Concat requires at least one byte of input".into(),
+                        ));
+                    }
+                    if bytes.len() > MAX_BYTES_LEN as usize {
+                        return Err(Error::Synthesis(format!(
+                            "Concat result length {} exceeds MAX_BYTES_LEN ({MAX_BYTES_LEN})",
+                            bytes.len()
+                        )));
+                    }
+                    mem_insert(output.clone(), CircuitValue::Bytes(bytes), &mut memory)?;
+                }
+                I::LoadConstant {
+                    val_t,
+                    encoding,
+                    output,
+                } => {
+                    let value = decode_offcircuit(encoding, val_t)
+                        .map_err(|e| Error::Synthesis(e.to_string()))?;
+                    let assigned = assign_constant_incircuit(std, layouter, &value)?;
+                    mem_insert(output.clone(), assigned, &mut memory)?;
                 }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {
@@ -1240,7 +1489,7 @@ impl Relation for IrSource {
                     matches!(op, I::TransientHash { .. } | I::HashToCurve { .. })
                 }),
             sha2_256: involves_instructions(&|op| matches!(op, I::PersistentHash { .. })),
-            sha2_512: false,
+            sha2_512: involves_instructions(&|op| matches!(op, I::Sha512 { .. })),
             keccak_256: involves_instructions(&|op| matches!(op, I::Keccak256 { .. })),
             sha3_256: false,
             blake2b: false,

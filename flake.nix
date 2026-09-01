@@ -120,6 +120,18 @@
                 VERSION=$(jq -s '.[0].version.major' $contract/zkir/*.zkir)
                 if [[ "$VERSION" == "3" ]]; then
                   ${packages.zkir}/bin/zkir compile-many "$contract/zkir" "$contract/keys"
+                elif [[ "$VERSION" == "2" ]]; then
+                  # The v2 toolchain was removed in the crate consolidation, so
+                  # v2 fixtures ship with an empty keys/ directory; only their
+                  # zkir sources and precomputed hashes remain usable.
+                  :
+                else
+                  # Without this the loop would fall through, leaving an empty
+                  # keys/ directory and still exiting 0, so a contract whose
+                  # version no zkir here can compile would silently vanish from
+                  # MIDNIGHT_LEDGER_TEST_STATIC_DIR instead of failing the build.
+                  echo "error: contract '$contract' declares unsupported zkir major version '$VERSION'" >&2
+                  exit 1
                 fi
               done
             '';
@@ -179,6 +191,7 @@
               pkgs.clang
               pkgs.cargo-hack
               pkgs.cargo-audit
+              pkgs.cargo-nextest
               pkgs.wasm-pack
               pkgs.wasm-bindgen-cli_0_2_108
             ];

@@ -535,10 +535,15 @@ pub enum Instruction {
         /// The result of multiplication
         output: Identifier,
     },
-    /// Multiplies the group generator by a scalar.
+    /// Multiplies the group generator by a scalar. The curve is determined by
+    /// the scalar type:
+    ///  - `JubjubScalar`     producing a `JubjubPoint`
+    ///  - `Secp256k1Scalar`  producing a `Secp256k1Point`
+    ///  - `Secp256r1Scalar`  producing a `Secp256r1Point`
+    ///  - `Curve25519Scalar` producing a `Curve25519Point`
     ///
     /// This operation will result in an error if the operand given as `scalar`
-    /// is not of type `JubjubScalar`.
+    /// is not one of the above types.
     ///
     /// Outputs 1 element, the product
     EcMulGenerator {

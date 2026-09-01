@@ -1760,8 +1760,9 @@ mod proof_tests {
 
     #[actix_rt::test]
     async fn test_secp256r1_ec_mul_proof() {
-        // Proves p0 * s0 via in-circuit ec_mul on Point<Secp256r1>; the result is
-        // checked against a private input carrying the off-circuit product.
+        // Proves p0 * s0 via in-circuit ec_mul on Point<Secp256r1>, and G * s0
+        // via ec_mul_generator; the results are checked against private inputs
+        // carrying the off-circuit products.
         let ir_raw = r#"{
            "version": { "major": 3, "minor": 0 },
            "inputs": [
@@ -1773,7 +1774,11 @@ mod proof_tests {
            "instructions": [
                { "op": "ec_mul", "a": "%p0", "scalar": "%s0", "output": "%p1" },
                { "op": "private_input", "type": "Point<Secp256r1>", "guard": null, "output": "%p1_priv" },
-               { "op": "constrain_eq", "a": "%p1", "b": "%p1_priv" }
+               { "op": "constrain_eq", "a": "%p1", "b": "%p1_priv" },
+
+               { "op": "ec_mul_generator", "scalar": "%s0", "output": "%pg" },
+               { "op": "private_input", "type": "Point<Secp256r1>", "guard": null, "output": "%pg_priv" },
+               { "op": "constrain_eq", "a": "%pg", "b": "%pg_priv" }
            ]
         }"#;
         let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
@@ -1794,8 +1799,11 @@ mod proof_tests {
         ]
         .concat();
 
-        let private_transcript: Vec<transient_crypto::curve::Fr> =
-            encode(IrValue::Secp256r1Point(p0 * s0));
+        let private_transcript: Vec<transient_crypto::curve::Fr> = [
+            encode(IrValue::Secp256r1Point(p0 * s0)),
+            encode(IrValue::Secp256r1Point(p256::P256::generator() * s0)),
+        ]
+        .concat();
 
         let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
         let preimage = ProofPreimage {
@@ -2166,9 +2174,9 @@ mod proof_tests {
 
     #[actix_rt::test]
     async fn test_curve25519_ec_mul_proof() {
-        // Proves p0 * s0 via in-circuit ec_mul on Point<Curve25519>; the
-        // result is checked against a private input carrying the off-circuit
-        // product.
+        // Proves p0 * s0 via in-circuit ec_mul on Point<Curve25519>, and
+        // G * s0 via ec_mul_generator; the results are checked against
+        // private inputs carrying the off-circuit products.
         let ir_raw = r#"{
            "version": { "major": 3, "minor": 0 },
            "inputs": [
@@ -2180,7 +2188,11 @@ mod proof_tests {
            "instructions": [
                { "op": "ec_mul", "a": "%p0", "scalar": "%s0", "output": "%p1" },
                { "op": "private_input", "type": "Point<Curve25519>", "guard": null, "output": "%p1_priv" },
-               { "op": "constrain_eq", "a": "%p1", "b": "%p1_priv" }
+               { "op": "constrain_eq", "a": "%p1", "b": "%p1_priv" },
+
+               { "op": "ec_mul_generator", "scalar": "%s0", "output": "%pg" },
+               { "op": "private_input", "type": "Point<Curve25519>", "guard": null, "output": "%pg_priv" },
+               { "op": "constrain_eq", "a": "%pg", "b": "%pg_priv" }
            ]
         }"#;
         let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
@@ -2201,8 +2213,13 @@ mod proof_tests {
         ]
         .concat();
 
-        let private_transcript: Vec<transient_crypto::curve::Fr> =
-            encode(IrValue::Curve25519Point(p0 * s0));
+        let private_transcript: Vec<transient_crypto::curve::Fr> = [
+            encode(IrValue::Curve25519Point(p0 * s0)),
+            encode(IrValue::Curve25519Point(
+                curve25519::Curve25519Subgroup::generator() * s0,
+            )),
+        ]
+        .concat();
 
         let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
         let preimage = ProofPreimage {

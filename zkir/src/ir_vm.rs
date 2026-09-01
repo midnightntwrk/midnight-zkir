@@ -46,7 +46,7 @@ use midnight_circuits::instructions::{
     PublicInputInstructions, RangeCheckInstructions, ZeroInstructions,
 };
 use midnight_circuits::types::{AssignedBit, AssignedByte, AssignedNative, InnerValue};
-use midnight_curves::{JubjubSubgroup, k256};
+use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
 use midnight_proofs::{
     circuit::{Layouter, Value},
     plonk::Error,
@@ -623,6 +623,10 @@ impl IrSource {
                     let p = match s.get_type() {
                         IrType::JubjubScalar => IrValue::JubjubPoint(JubjubSubgroup::generator()),
                         IrType::Secp256k1Scalar => IrValue::Secp256k1Point(k256::K256::generator()),
+                        IrType::Secp256r1Scalar => IrValue::Secp256r1Point(p256::P256::generator()),
+                        IrType::Curve25519Scalar => IrValue::Curve25519Point(
+                            curve25519::Curve25519Subgroup::generator(),
+                        ),
                         t => bail!("Unsupported EcMulGenerator for scalar of type {t:?}"),
                     };
                     let r = ec_mul_offcircuit(&p, &s)?;
@@ -1235,6 +1239,15 @@ impl Relation for IrSource {
                         IrType::Secp256k1Scalar => CircuitValue::Secp256k1Point(
                             std.secp256k1()
                                 .assign_fixed(layouter, k256::K256::generator())?,
+                        ),
+                        IrType::Secp256r1Scalar => CircuitValue::Secp256r1Point(
+                            std.p256().assign_fixed(layouter, p256::P256::generator())?,
+                        ),
+                        IrType::Curve25519Scalar => CircuitValue::Curve25519Point(
+                            std.curve25519().assign_fixed(
+                                layouter,
+                                curve25519::Curve25519Subgroup::generator(),
+                            )?,
                         ),
                         t => {
                             return Err(Error::Synthesis(format!(

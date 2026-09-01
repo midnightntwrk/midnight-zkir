@@ -192,5 +192,6 @@ mod tests {
         assert!(constrain_eq_offcircuit(&Curve25519Scalar(r), &Curve25519Scalar(r)).is_ok());
         assert!(constrain_eq_offcircuit(&Curve25519Point(p), &Curve25519Point(-p)).is_err());
         assert!(constrain_eq_offcircuit(&Curve25519Base(s), &Curve25519Scalar(r)).is_err());
+        assert!(constrain_eq_offcircuit(&Native(x), &Curve25519Scalar(r)).is_err());
     }
 }

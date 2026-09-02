@@ -27,7 +27,7 @@
 //!   load JSON IR -> compute commitment over inputs ++ encoded expected
 //!   outputs -> keygen -> prove -> verify against `[binding, commitment]`.
 
-use midnight_zkir_v3::ir_types::IrValue;
+use midnight_zkir::ir_types::IrValue;
 use transient_crypto::curve::Fr;
 
 use crate::common::assert_typed_output_roundtrip;
@@ -157,7 +157,7 @@ async fn bytes_n_identity() {
     // Output a Bytes(n) input directly for several n (spanning the 31-byte
     // chunk boundary), exercising encode_incircuit / encode_offcircuit and the
     // Bytes(n) input assignment.
-    use midnight_zkir_v3::ir_instructions::encode::encode_offcircuit;
+    use midnight_zkir::ir_instructions::encode::encode_offcircuit;
     for n in [1usize, 31, 32, 48, 63] {
         let bytes: Vec<u8> = (0..n as u8).collect();
         let inputs: Vec<Fr> = encode_offcircuit(&IrValue::Bytes(bytes.clone()))

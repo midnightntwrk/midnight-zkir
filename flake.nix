@@ -40,9 +40,7 @@
           ./Cargo.toml
           ./Cargo.lock
           ./zkir
-          ./zkir-v3
           ./zkir-wasm
-          ./zkir-v3-wasm
         ];
         rust = fenix.packages.${system};
         zkir-version = (builtins.fromTOML (builtins.readFile ./zkir/Cargo.toml)).package.version;
@@ -100,16 +98,9 @@
             rust.stable.rust-analyzer
           ];
 
-          packages.default = pkgs.symlinkJoin {
-            name = "zkir-all";
-            paths = [
-              packages.zkir
-              packages.zkir-v3
-            ];
-          };
+          packages.default = packages.zkir;
 
           packages.zkir = mkZkir { pname = "zkir"; crate = "midnight-zkir"; };
-          packages.zkir-v3 = mkZkir { pname = "zkir-v3"; crate = "midnight-zkir-v3"; };
 
           packages.test-artifacts = pkgs.stdenvNoCC.mkDerivation {
             pname = "midnight-zkir-test-artifacts";
@@ -120,7 +111,6 @@
               pkgs.jq
               packages.public-params
               packages.zkir
-              packages.zkir-v3
             ];
             buildPhase = ''
               for contract in *; do
@@ -128,10 +118,13 @@
                 mkdir -p "$contract/keys"
                 mv $contract-tmp "$contract/zkir"
                 VERSION=$(jq -s '.[0].version.major' $contract/zkir/*.zkir)
-                if [[ "$VERSION" == "2" ]]; then
+                if [[ "$VERSION" == "3" ]]; then
                   ${packages.zkir}/bin/zkir compile-many "$contract/zkir" "$contract/keys"
-                elif [[ "$VERSION" == "3" ]]; then
-                  ${packages.zkir-v3}/bin/zkir compile-many "$contract/zkir" "$contract/keys"
+                elif [[ "$VERSION" == "2" ]]; then
+                  # The v2 toolchain was removed in the crate consolidation, so
+                  # v2 fixtures ship with an empty keys/ directory; only their
+                  # zkir sources and precomputed hashes remain usable.
+                  :
                 else
                   # Without this the loop would fall through, leaving an empty
                   # keys/ directory and still exiting 0, so a contract whose

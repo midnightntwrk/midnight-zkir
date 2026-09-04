@@ -21,8 +21,8 @@ use crate::{
     ir_types::{CircuitValue, IrValue},
 };
 
-/// Converts (off-circuit) the given value into its 32-byte representation.
-/// Supported on types:
+/// Converts (off-circuit) the given value into its fixed-size (32-byte)
+/// representation. Supported on the prime-field types:
 ///  - Native
 ///  - Secp256k1Base
 ///  - Secp256k1Scalar
@@ -31,13 +31,15 @@ use crate::{
 ///  - Curve25519Base
 ///  - Curve25519Scalar
 ///
-/// In all the above prime fields, the 32-byte representation is the little-endian
-/// byte encoding of the underlying (canonical) integer.
+/// In all the above prime fields, the byte representation is the little-endian
+/// byte encoding of the underlying (canonical) integer. For inputs to
+/// `from_bytes` representing an integer below the field order,
+/// `to_bytes . from_bytes` is the identity up to zero-padding to 32 bytes.
 ///
 /// # Errors
 ///
 /// Errors if the input is not a supported type.
-pub fn into_bytes32_offcircuit(value: &IrValue) -> Result<IrValue, anyhow::Error> {
+pub fn to_bytes_offcircuit(value: &IrValue) -> Result<IrValue, anyhow::Error> {
     use IrValue::*;
     match value {
         Native(x) => Ok(Bytes(x.0.to_bytes_le().to_vec())),
@@ -55,14 +57,14 @@ pub fn into_bytes32_offcircuit(value: &IrValue) -> Result<IrValue, anyhow::Error
         Curve25519Scalar(s) => Ok(Bytes(s.to_bytes_le().to_vec())),
 
         _ => Err(anyhow::anyhow!(
-            "Unsupported into_bytes32 for {:?}",
+            "Unsupported to_bytes for {:?}",
             value.get_type(),
         )),
     }
 }
 
-/// Converts (in-circuit) the given value into its 32-byte representation.
-/// Supported on types:
+/// Converts (in-circuit) the given value into its fixed-size (32-byte)
+/// representation. Supported on the prime-field types:
 ///  - Native
 ///  - Secp256k1Base
 ///  - Secp256k1Scalar
@@ -71,13 +73,14 @@ pub fn into_bytes32_offcircuit(value: &IrValue) -> Result<IrValue, anyhow::Error
 ///  - Curve25519Base
 ///  - Curve25519Scalar
 ///
-/// In all the above prime fields, the 32-byte representation is the little-endian
-/// byte encoding of the underlying (canonical) integer.
+/// In all the above prime fields, the byte representation is the little-endian
+/// byte encoding of the underlying (canonical) integer; see
+/// [`to_bytes_offcircuit`].
 ///
 /// # Errors
 ///
 /// Errors if the input is not a supported type.
-pub fn into_bytes32_incircuit(
+pub fn to_bytes_incircuit(
     std_lib: &ZkStdLib,
     layouter: &mut impl Layouter<F>,
     value: &CircuitValue,
@@ -125,7 +128,7 @@ pub fn into_bytes32_incircuit(
             .map(Bytes),
 
         _ => Err(plonk::Error::Synthesis(format!(
-            "Unsupported into_bytes32 for {:?}",
+            "Unsupported to_bytes for {:?}",
             value.get_type(),
         ))),
     }
@@ -139,42 +142,44 @@ mod tests {
     use transient_crypto::curve::Fr;
 
     use super::*;
-    use crate::ir_instructions::from_bytes32::from_bytes32_offcircuit;
+    use crate::ir_instructions::from_bytes::from_bytes_offcircuit;
 
     #[test]
-    fn test_into_bytes32_roundtrip() {
+    fn test_to_bytes_roundtrip() {
         use IrValue::*;
 
-        // `into_bytes32` yields a `Bytes(32)` value; extract its fixed array.
-        let to_arr =
-            |v: IrValue| -> [u8; 32] { <Vec<u8>>::try_from(v).unwrap().try_into().unwrap() };
+        for x in [
+            Native(Fr(F::random(OsRng))),
+            Secp256k1Base(k256::Fp::random(OsRng)),
+            Secp256k1Scalar(k256::Fq::random(OsRng)),
+            Secp256r1Base(p256::Fp::random(OsRng)),
+            Secp256r1Scalar(p256::Fq::random(OsRng)),
+            Curve25519Base(curve25519::Fp::random(OsRng)),
+            // Nb. dalek's inherent `Scalar::random` (which shadows
+            // `ff::Field::random`) takes the rng by mutable reference.
+            Curve25519Scalar(curve25519::Scalar::random(&mut OsRng)),
+        ] {
+            let bytes: Vec<u8> = to_bytes_offcircuit(&x).unwrap().try_into().unwrap();
+            assert_eq!(from_bytes_offcircuit(&x.get_type(), &bytes).unwrap(), x);
+        }
+    }
 
-        let x = Native(Fr(F::random(OsRng)));
-        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
-        assert_eq!(from_bytes32_offcircuit(&x.get_type(), &bytes).unwrap(), x);
+    // Every supported field type serializes to exactly 32 bytes.
+    #[test]
+    fn test_to_bytes_output_is_32_bytes() {
+        use IrValue::*;
 
-        let x = Secp256k1Base(k256::Fp::random(OsRng));
-        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
-        assert_eq!(from_bytes32_offcircuit(&x.get_type(), &bytes).unwrap(), x);
-
-        let x = Secp256k1Scalar(k256::Fq::random(OsRng));
-        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
-        assert_eq!(from_bytes32_offcircuit(&x.get_type(), &bytes).unwrap(), x);
-
-        let x = Secp256r1Base(p256::Fp::random(OsRng));
-        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
-        assert_eq!(from_bytes32_offcircuit(&x.get_type(), &bytes).unwrap(), x);
-
-        let x = Secp256r1Scalar(p256::Fq::random(OsRng));
-        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
-        assert_eq!(from_bytes32_offcircuit(&x.get_type(), &bytes).unwrap(), x);
-
-        let x = Curve25519Base(curve25519::Fp::random(OsRng));
-        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
-        assert_eq!(from_bytes32_offcircuit(&x.get_type(), &bytes).unwrap(), x);
-
-        let x = Curve25519Scalar(<curve25519::Scalar as Field>::random(OsRng));
-        let bytes = to_arr(into_bytes32_offcircuit(&x).unwrap());
-        assert_eq!(from_bytes32_offcircuit(&x.get_type(), &bytes).unwrap(), x);
+        for x in [
+            Native(Fr(F::random(OsRng))),
+            Secp256k1Base(k256::Fp::random(OsRng)),
+            Secp256k1Scalar(k256::Fq::random(OsRng)),
+            Secp256r1Base(p256::Fp::random(OsRng)),
+            Secp256r1Scalar(p256::Fq::random(OsRng)),
+            Curve25519Base(curve25519::Fp::random(OsRng)),
+            Curve25519Scalar(curve25519::Scalar::random(&mut OsRng)),
+        ] {
+            let bytes: Vec<u8> = to_bytes_offcircuit(&x).unwrap().try_into().unwrap();
+            assert_eq!(bytes.len(), 32);
+        }
     }
 }

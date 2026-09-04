@@ -535,10 +535,15 @@ pub enum Instruction {
         /// The result of multiplication
         output: Identifier,
     },
-    /// Multiplies the group generator by a scalar.
+    /// Multiplies the group generator by a scalar. The curve is determined by
+    /// the scalar type:
+    ///  - `JubjubScalar`     producing a `JubjubPoint`
+    ///  - `Secp256k1Scalar`  producing a `Secp256k1Point`
+    ///  - `Secp256r1Scalar`  producing a `Secp256r1Point`
+    ///  - `Curve25519Scalar` producing a `Curve25519Point`
     ///
     /// This operation will result in an error if the operand given as `scalar`
-    /// is not of type `JubjubScalar`.
+    /// is not one of the above types.
     ///
     /// Outputs 1 element, the product
     EcMulGenerator {
@@ -591,9 +596,10 @@ pub enum Instruction {
         /// The output variable names
         output: Identifier,
     },
-    /// Transforms the given value into its 32-byte representation.
+    /// Transforms the given value into its fixed-size (32-byte)
+    /// representation, a `Bytes(32)`.
     ///
-    /// Supported on types:
+    /// Supported on the prime-field types:
     /// * Native
     /// * Secp256k1Base
     /// * Secp256k1Scalar
@@ -602,17 +608,19 @@ pub enum Instruction {
     /// * Curve25519Base
     /// * Curve25519Scalar
     ///
-    /// In all the above prime fields, the 32-byte representation is the little-endian
-    /// byte encoding of the underlying (canonical) integer.
-    IntoBytes32 {
+    /// In all the above prime fields, the byte representation is the
+    /// little-endian byte encoding of the underlying (canonical) integer.
+    ToBytes {
         /// The element to be converted
         input: Operand,
         /// The output variable name
         output: Identifier,
     },
-    /// Constructs an element of the given type from its 32-byte representation.
+    /// Constructs an element of the given type from a `Bytes(n)` of any
+    /// length, interpreted as a little-endian integer and reduced modulo the
+    /// field order.
     ///
-    /// Supported on types:
+    /// Supported on the prime-field types:
     /// * Native
     /// * Secp256k1Base
     /// * Secp256k1Scalar
@@ -621,12 +629,11 @@ pub enum Instruction {
     /// * Curve25519Base
     /// * Curve25519Scalar
     ///
-    /// In all the above prime fields, the 32-byte representation is the little-endian
-    /// byte encoding of the underlying (canonical) integer.
-    ///
-    /// This operation also accepts non-canonical 32-byte representation in prime fields
-    /// by applying the relevant modular reduction.
-    FromBytes32 {
+    /// The modular reduction in particular allows reducing the 64-byte output
+    /// of a 512-bit hash into a `Curve25519Scalar`, as required by ed25519.
+    /// For inputs representing an integer below the field order, `ToBytes`
+    /// inverts `FromBytes` up to zero-padding to 32 bytes.
+    FromBytes {
         /// The input bytes
         bytes: Operand,
         /// The type to be converted into

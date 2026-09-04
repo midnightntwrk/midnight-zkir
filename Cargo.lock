@@ -1647,7 +1647,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "midnight-base-crypto"
 version = "1.1.0"
-source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=9a8777c4d035fc7f38ae286bcf5f8656668efd9f#9a8777c4d035fc7f38ae286bcf5f8656668efd9f"
+source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=08ae905caf8b6d38bc14774fecbdbd3659b6686a#08ae905caf8b6d38bc14774fecbdbd3659b6686a"
 dependencies = [
  "anyhow",
  "atomic-write-file",
@@ -1681,7 +1681,7 @@ dependencies = [
 [[package]]
 name = "midnight-base-crypto-derive"
 version = "1.1.0"
-source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=9a8777c4d035fc7f38ae286bcf5f8656668efd9f#9a8777c4d035fc7f38ae286bcf5f8656668efd9f"
+source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=08ae905caf8b6d38bc14774fecbdbd3659b6686a#08ae905caf8b6d38bc14774fecbdbd3659b6686a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1767,7 +1767,7 @@ dependencies = [
 [[package]]
 name = "midnight-serialize"
 version = "1.2.0"
-source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=9a8777c4d035fc7f38ae286bcf5f8656668efd9f#9a8777c4d035fc7f38ae286bcf5f8656668efd9f"
+source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=08ae905caf8b6d38bc14774fecbdbd3659b6686a#08ae905caf8b6d38bc14774fecbdbd3659b6686a"
 dependencies = [
  "crypto",
  "konst",
@@ -1783,7 +1783,7 @@ dependencies = [
 [[package]]
 name = "midnight-serialize-macros"
 version = "1.0.0"
-source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=9a8777c4d035fc7f38ae286bcf5f8656668efd9f#9a8777c4d035fc7f38ae286bcf5f8656668efd9f"
+source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=08ae905caf8b6d38bc14774fecbdbd3659b6686a#08ae905caf8b6d38bc14774fecbdbd3659b6686a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1793,7 +1793,7 @@ dependencies = [
 [[package]]
 name = "midnight-storage-core"
 version = "1.2.0"
-source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=9a8777c4d035fc7f38ae286bcf5f8656668efd9f#9a8777c4d035fc7f38ae286bcf5f8656668efd9f"
+source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=08ae905caf8b6d38bc14774fecbdbd3659b6686a#08ae905caf8b6d38bc14774fecbdbd3659b6686a"
 dependencies = [
  "archery",
  "crypto",
@@ -1820,7 +1820,7 @@ dependencies = [
 [[package]]
 name = "midnight-storage-macros"
 version = "1.0.0"
-source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=9a8777c4d035fc7f38ae286bcf5f8656668efd9f#9a8777c4d035fc7f38ae286bcf5f8656668efd9f"
+source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=08ae905caf8b6d38bc14774fecbdbd3659b6686a#08ae905caf8b6d38bc14774fecbdbd3659b6686a"
 dependencies = [
  "midnight-serialize-macros",
  "proc-macro2",
@@ -1830,8 +1830,8 @@ dependencies = [
 
 [[package]]
 name = "midnight-transient-crypto"
-version = "3.0.0"
-source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=9a8777c4d035fc7f38ae286bcf5f8656668efd9f#9a8777c4d035fc7f38ae286bcf5f8656668efd9f"
+version = "4.0.0"
+source = "git+https://github.com/midnightntwrk/midnight-ledger?rev=08ae905caf8b6d38bc14774fecbdbd3659b6686a#08ae905caf8b6d38bc14774fecbdbd3659b6686a"
 dependencies = [
  "anyhow",
  "blake2b_simd",

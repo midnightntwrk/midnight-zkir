@@ -19,7 +19,7 @@ pub mod add;
 pub mod assign;
 pub mod assign_constant;
 pub mod constrain_eq;
-pub mod decidable;
+pub mod decider;
 pub mod ec_mul;
 pub mod encode;
 pub mod eq;

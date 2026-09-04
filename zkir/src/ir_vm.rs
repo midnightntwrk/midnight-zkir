@@ -15,6 +15,7 @@ use crate::ir_instructions::add::{add_incircuit, add_offcircuit};
 use crate::ir_instructions::assign::assign_incircuit;
 use crate::ir_instructions::assign_constant::assign_constant_incircuit;
 use crate::ir_instructions::constrain_eq::{constrain_eq_incircuit, constrain_eq_offcircuit};
+use crate::ir_instructions::decider::accumulator_pis;
 use crate::ir_instructions::ec_mul::{ec_mul_incircuit, ec_mul_offcircuit};
 use crate::ir_instructions::encode::{
     decode_offcircuit, encode_incircuit, encode_offcircuit, jubjub_scalar_from_biguint,
@@ -79,8 +80,8 @@ pub struct Preprocessed {
     pub binding_input: outer::Scalar,
     pub comm_comm: Option<(outer::Scalar, outer::Scalar)>,
     /// The inner-proof witnesses each `InnerProof` bound, one per instruction in
-    /// instruction order; empty for a guarded-off one.
-    pub inner_proof_witnesses: Vec<Vec<u8>>,
+    /// instruction order; the empty blob for a guarded-off one.
+    pub inner_proofs: Vec<Vec<u8>>,
 }
 
 /// Converts an off-circuit `Bytes(32)` value into a fixed 32-byte array,
@@ -308,9 +309,9 @@ impl IrSource {
         let mut public_transcript_inputs_idx: usize = 0;
         let mut public_transcript_outputs_idx: usize = 0;
         let mut private_transcript_outputs_idx: usize = 0;
-        let mut proof_witnesses_idx: usize = 0;
+        let mut inner_proofs_idx: usize = 0;
         // One entry per `InnerProof` instruction, in instruction order.
-        let mut inner_proof_witnesses: Vec<Vec<u8>> = Vec::new();
+        let mut inner_proofs: Vec<Vec<u8>> = Vec::new();
         let mut outputs = Vec::new();
         let idx = |memory: &HashMap<Identifier, IrValue>, id: &Identifier| {
             let res = memory
@@ -853,33 +854,33 @@ impl IrSource {
                         )
                     })?;
 
-                    let block = verify_proof_offcircuit(vk_blob, &instance, proof, guard)?;
-                    for f in block {
+                    let acc = verify_proof_offcircuit(vk_blob, &instance, proof, guard)?;
+                    for f in accumulator_pis(&acc) {
                         acc_pis.push(Fr(f));
                     }
                 }
                 I::InnerProof { guard, output } => {
+                    // One witness per instruction, whatever the guard, so both
+                    // passes index them the same way.
+                    let InnerProofWitness::Direct(bytes) = preimage
+                        .inner_proofs
+                        .get(inner_proofs_idx)
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Not enough proof witnesses: ran out at index {}",
+                                inner_proofs_idx
+                            )
+                        })?;
+                    inner_proofs_idx += 1;
+
+                    // Guarded off, the witness is ignored: the `VerifyProof`
+                    // under the same guard discards the accumulator it produces.
                     let proof = if resolve_operand_bool(&memory, guard)? {
-                        let witness = preimage
-                            .proof_witnesses
-                            .get(proof_witnesses_idx)
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "Not enough proof witnesses: ran out at index {}",
-                                    proof_witnesses_idx
-                                )
-                            })?;
-                        proof_witnesses_idx += 1;
-                        match witness {
-                            InnerProofWitness::Direct(bytes) => bytes.clone(),
-                        }
+                        bytes.clone()
                     } else {
-                        // Guarded off: consume nothing, and bind the empty blob.
-                        // The `VerifyProof` under the same guard discards the
-                        // accumulator it produces from it.
                         Vec::new()
                     };
-                    inner_proof_witnesses.push(proof.clone());
+                    inner_proofs.push(proof.clone());
                     proofs.insert(output.clone(), proof);
                 }
             }
@@ -899,11 +900,11 @@ impl IrSource {
                 "Transcripts not fully consumed");
             bail!("Transcripts not fully consumed");
         }
-        if preimage.proof_witnesses.len() != proof_witnesses_idx {
+        if preimage.inner_proofs.len() != inner_proofs_idx {
             bail!(
-                "Expected {} proof witnesses (one per active InnerProof), received {}",
-                proof_witnesses_idx,
-                preimage.proof_witnesses.len()
+                "Expected {} proof witnesses (one per InnerProof), received {}",
+                inner_proofs_idx,
+                preimage.inner_proofs.len()
             );
         }
         if self.do_communications_commitment {
@@ -941,7 +942,7 @@ impl IrSource {
             comm_comm: preimage
                 .communications_commitment
                 .map(|(comm, rand)| (comm.0, rand.0)),
-            inner_proof_witnesses,
+            inner_proofs,
         })
     }
 }
@@ -1615,12 +1616,15 @@ impl Relation for IrSource {
                 // The guard is off-circuit bookkeeping only: `preprocess` already
                 // resolved it, binding the empty blob where it was off, and
                 // recorded one witness per instruction for us to index.
+                // Both passes walk one slot per instruction, so this index
+                // advances with the instruction list exactly as the off-circuit
+                // one does.
                 I::InnerProof { guard: _, output } => {
                     let idx = inner_proof_idx;
                     inner_proof_idx += 1;
                     let proof_value = witness
                         .as_ref()
-                        .map(|w| w.inner_proof_witnesses[idx].clone());
+                        .map(|w| w.inner_proofs[idx].clone());
                     proofs.insert(output.clone(), proof_value);
                 }
             }

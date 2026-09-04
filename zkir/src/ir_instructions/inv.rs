@@ -25,6 +25,7 @@ use crate::{
 /// Inverts off-circuit the given input.
 /// Inversion is supported on:
 ///   - `Native`
+///   - `JubjubScalar`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
 ///   - `Secp256r1Base`
@@ -44,6 +45,10 @@ pub fn inv_offcircuit(x: &IrValue) -> Result<IrValue, anyhow::Error> {
             .ok_or_else(zero_err)
             .map(Fr)
             .map(Native),
+
+        JubjubScalar(s) => Option::from(s.invert())
+            .ok_or_else(zero_err)
+            .map(JubjubScalar),
 
         Secp256k1Base(s) => Option::from(s.invert())
             .ok_or_else(zero_err)
@@ -79,6 +84,7 @@ pub fn inv_offcircuit(x: &IrValue) -> Result<IrValue, anyhow::Error> {
 /// Inverts in-circuit the given input.
 /// Inversion is supported on:
 ///   - `Native`
+///   - `JubjubScalar`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
 ///   - `Secp256r1Base`
@@ -100,6 +106,10 @@ pub fn inv_incircuit(
         Native(a) => {
             let r = std_lib.inv(layouter, a)?;
             Ok(Native(r))
+        }
+        JubjubScalar(a) => {
+            let r = ArithInstructions::inv(std_lib.jubjub(), layouter, a)?;
+            Ok(JubjubScalar(r))
         }
         Secp256k1Base(a) => {
             let r = (std_lib.secp256k1().base_field_chip()).inv(layouter, a)?;
@@ -138,7 +148,7 @@ pub fn inv_incircuit(
 #[cfg(test)]
 mod tests {
     use group::ff::Field;
-    use midnight_curves::{curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, curve25519, k256, p256};
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
 
@@ -153,6 +163,13 @@ mod tests {
             inv_offcircuit(&Native(x)).unwrap(),
             Native(Fr(x.0.invert().unwrap()))
         );
+
+        let x = JubjubFr::random(OsRng);
+        assert_eq!(
+            inv_offcircuit(&JubjubScalar(x)).unwrap(),
+            JubjubScalar(x.invert().unwrap())
+        );
+        assert!(inv_offcircuit(&JubjubScalar(JubjubFr::ZERO)).is_err());
 
         let x = k256::Fp::random(OsRng);
         assert_eq!(

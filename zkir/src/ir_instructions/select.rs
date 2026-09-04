@@ -29,6 +29,7 @@ use crate::{
 ///   - `Bool`
 ///   - `Byte`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -61,6 +62,7 @@ pub fn select_offcircuit(bit: bool, a: &IrValue, b: &IrValue) -> Result<IrValue,
 ///   - `Bool`
 ///   - `Byte`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -88,6 +90,9 @@ pub fn select_incircuit(
         (Byte(a), Byte(b)) => Ok(Byte(std_lib.select(layouter, bit, a, b)?)),
         (JubjubPoint(p), JubjubPoint(q)) => {
             Ok(JubjubPoint(std_lib.jubjub().select(layouter, bit, p, q)?))
+        }
+        (JubjubScalar(s), JubjubScalar(r)) => {
+            Ok(JubjubScalar(std_lib.jubjub().select(layouter, bit, s, r)?))
         }
 
         (Secp256k1Point(p), Secp256k1Point(q)) => Ok(Secp256k1Point(

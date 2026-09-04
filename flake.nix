@@ -41,9 +41,14 @@
             fetchurl =
               args:
                 (prev.fetchurl args).overrideAttrs (old: {
+                  # The agent string deliberately matches midnight-ledger's
+                  # overlay: when a consumer unifies our nixpkgs with theirs
+                  # via `follows`, identical fetchurl calls (e.g. the public
+                  # parameters) then share one derivation instead of being
+                  # downloaded twice.
                   curlOptsList =
                     (old.curlOptsList or [])
-                    ++ ["--user-agent" "midnight-zkir/1.0"];
+                    ++ ["--user-agent" "midnight-ledger/1.0"];
                 });
           })
         ];

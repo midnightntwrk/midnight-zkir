@@ -31,8 +31,29 @@
   }:
     utils.lib.eachDefaultSystem (
       system: let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # crates.io returns 403 to any request whose User-Agent starts with
+        # "curl/", which is exactly what nixpkgs' fetchurl sends
+        # ("curl/$curlVersion Nixpkgs/$nixpkgsVersion"), so every crate tarball
+        # missing from the binary cache fails to download.
+        # To solve this we replace the agent for all fetchurl derivations.
+        overlays = [
+          (_final: prev: {
+            fetchurl =
+              args:
+                (prev.fetchurl args).overrideAttrs (old: {
+                  curlOptsList =
+                    (old.curlOptsList or [])
+                    ++ ["--user-agent" "midnight-zkir/1.0"];
+                });
+          })
+        ];
+        pkgs = import nixpkgs {inherit system overlays;};
         pkgsStatic = pkgs.pkgsStatic;
+        bagel-wasm = (import ./bagel.nix) {
+          inherit system nixpkgs overlays;
+          stdenv = pkgs.clangStdenv;
+          inherit (self.packages.${system}) rust-build-toolchain;
+        };
         mkShell = pkgs.mkShell.override {
           stdenv = pkgs.clangStdenv;
         };
@@ -110,6 +131,25 @@
 
           packages.zkir = mkZkir { pname = "zkir"; crate = "midnight-zkir"; };
           packages.zkir-v3 = mkZkir { pname = "zkir-v3"; crate = "midnight-zkir-v3"; };
+
+          # The @midnightntwrk/zkir-v2 wasm bindings as an npm package;
+          # consumed by midnight-ledger's integration tests for local proving.
+          packages.zkir-wasm = bagel-wasm {
+            name = "zkir-wasm";
+            crate-name = "midnight-zkir-wasm";
+            package-name = "zkir-v2";
+            path = "zkir-wasm";
+            src = rustWorkspaceSrc;
+            version = (builtins.fromTOML (builtins.readFile ./zkir-wasm/Cargo.toml)).package.version;
+            extraVariables = {
+              # clang doesn't support 'zerocallusedregs' for wasm, but nix
+              # tries to set it anyway. The stack protector tries to pull in
+              # OS code that doesn't exist.
+              hardeningDisable = ["zerocallusedregs" "stackprotector"];
+              MIDNIGHT_PP = "${packages.public-params}";
+            };
+            extraBuildInputs = [packages.public-params];
+          };
 
           packages.test-artifacts = pkgs.stdenvNoCC.mkDerivation {
             pname = "midnight-zkir-test-artifacts";

@@ -30,6 +30,7 @@ use crate::{
 ///   - `Native`
 ///   - `Bool`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -49,6 +50,7 @@ pub fn neg_offcircuit(x: &IrValue) -> Result<IrValue, anyhow::Error> {
         Native(a) => Ok(Native(-*a)),
         Bool(a) => Ok(Bool(!a)),
         JubjubPoint(p) => Ok(JubjubPoint(-p)),
+        JubjubScalar(s) => Ok(JubjubScalar(-s)),
 
         Secp256k1Point(p) => Ok(Secp256k1Point(-p)),
         Secp256k1Base(s) => Ok(Secp256k1Base(-s)),
@@ -74,6 +76,7 @@ pub fn neg_offcircuit(x: &IrValue) -> Result<IrValue, anyhow::Error> {
 ///   - `Native`
 ///   - `Bool`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -105,6 +108,10 @@ pub fn neg_incircuit(
         JubjubPoint(p) => {
             let r = std_lib.jubjub().negate(layouter, p)?;
             Ok(JubjubPoint(r))
+        }
+        JubjubScalar(a) => {
+            let r = ArithInstructions::neg(std_lib.jubjub(), layouter, a)?;
+            Ok(JubjubScalar(r))
         }
 
         Secp256k1Point(p) => {
@@ -166,7 +173,7 @@ impl Neg for IrValue {
 mod tests {
     use group::Group;
     use group::ff::Field;
-    use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, JubjubSubgroup, curve25519, k256, p256};
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
 
@@ -183,6 +190,9 @@ mod tests {
         assert_eq!(-Bool(true), Bool(false));
         assert_eq!(-Bool(false), Bool(true));
         assert_eq!(-JubjubPoint(p), JubjubPoint(-p));
+
+        let s = JubjubFr::random(OsRng);
+        assert_eq!(-JubjubScalar(s), JubjubScalar(-s));
 
         let p = k256::K256::random(OsRng);
         let x = k256::Fp::random(OsRng);

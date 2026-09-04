@@ -37,8 +37,7 @@ use crate::{
 ///  - Curve25519Scalar
 ///
 /// The bytes are interpreted as a little-endian integer and reduced modulo the
-/// field order. In particular this allows building a `Curve25519Scalar` from
-/// the 64-byte output of a 512-bit hash, as required by ed25519.
+/// field order.
 ///
 /// # Errors
 ///

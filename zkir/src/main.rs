@@ -11,14 +11,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! ZKIR v2 compiler.
+//! ZKIR v3 compiler.
 #![deny(unreachable_pub)]
 //#![deny(warnings)]
 use base_crypto::data_provider::{self, MidnightDataProvider};
 use clap::{Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use midnight_zkir::{IrMinorVersion, IrSource};
-use serialize::tagged_serialize;
+use midnight_zkir::IrSource;
+use serialize::{tagged_deserialize, tagged_serialize};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -30,7 +30,6 @@ use tracing_subscriber::Registry;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::prelude::*;
 use transient_crypto::proofs::Zkir;
-use transient_crypto_old::proofs::Zkir as ZkirOld;
 
 #[derive(Parser)]
 #[clap(version, about, long_about = None)]
@@ -86,12 +85,10 @@ fn maybe_bzkir(path: impl AsRef<Path>) -> anyhow::Result<IrSource> {
         Some(Some("zkir")) => {
             let ir = IrSource::load(BufReader::new(File::open(&path)?))?;
             let mut bzkir = BufWriter::new(File::create(path.as_ref().with_extension("bzkir"))?);
-            ir.serialize_to_tagged(&mut bzkir)?;
+            tagged_serialize(&ir, &mut bzkir)?;
             Ok(ir)
         }
-        _ => Ok(IrSource::load_from_tagged(&mut BufReader::new(
-            File::open(path)?,
-        ))?),
+        _ => Ok(tagged_deserialize(&mut BufReader::new(File::open(path)?))?),
     }
 }
 
@@ -197,31 +194,12 @@ async fn main() -> anyhow::Result<()> {
                 let pb = multi.add(pb);
                 pb.set_message(format!("  circuit {file:?}"));
                 let ir = without_extension(path)?;
-                match &ir.version {
-                    IrMinorVersion::V0 | IrMinorVersion::V1 => {
-                        let k = ZkirOld::k(&ir);
-                        pb.set_message(format!("  circuit {file:?} (k={k})"));
-                        let model = ir.model();
-                        pb.set_message(format!(
-                            "  circuit {file:?} (k={k}, rows={})",
-                            model.rows()
-                        ));
-                        info!(?model, "full model for {file:?}");
-                        data.push((pb, ir, k));
-                    }
-                    IrMinorVersion::V2 => {
-                        let k = Zkir::k(&ir);
-                        pb.set_message(format!("  circuit {file:?} (k={k})"));
-                        let model = ir.model();
-                        pb.set_message(format!(
-                            "  circuit {file:?} (k={k}, rows={})",
-                            model.rows()
-                        ));
-                        info!(?model, "full model for {file:?}");
-                        data.push((pb, ir, k));
-                    }
-                    _ => unreachable!("match should be exhaustive internally"),
-                }
+                let k = ir.k();
+                pb.set_message(format!("  circuit {file:?} (k={k})"));
+                let model = ir.model();
+                pb.set_message(format!("  circuit {file:?} (k={k}, rows={})", model.rows()));
+                info!(?model, "full model for {file:?}");
+                data.push((pb, ir, k));
             }
             let size = data.iter().map(|(_, _, k)| 1u64 << *k as u64).sum::<u64>();
             let overall = ProgressBar::new(size).with_style(
@@ -242,23 +220,9 @@ async fn main() -> anyhow::Result<()> {
                 let mut vk_file =
                     BufWriter::new(File::create(key_dir.join(file).with_extension("verifier"))?);
                 pb.enable_steady_tick(Duration::from_millis(100));
-                match &ir.version {
-                    IrMinorVersion::V0 | IrMinorVersion::V1 => {
-                        let (pk, vk) = ZkirOld::keygen(ir, &pp).await?;
-                        IrSource::serialize_stdlib_v1_prover_key_to_tagged(
-                            ir.version,
-                            &pk,
-                            &mut pk_file,
-                        )?;
-                        tagged_serialize(&vk, &mut vk_file)?;
-                    }
-                    IrMinorVersion::V2 => {
-                        let (pk, vk) = Zkir::keygen(ir, &pp).await?;
-                        IrSource::serialize_prover_key_to_tagged(ir.version, &pk, &mut pk_file)?;
-                        tagged_serialize(&vk, &mut vk_file)?;
-                    }
-                    _ => unreachable!("match should be exhaustive internally"),
-                }
+                let (pk, vk) = ir.keygen(&pp).await?;
+                tagged_serialize(&pk, &mut pk_file)?;
+                tagged_serialize(&vk, &mut vk_file)?;
                 pb.finish();
                 overall.set_message(format!("{n}/{}", data.len()));
                 overall.set_position(prog);
@@ -277,11 +241,7 @@ async fn main() -> anyhow::Result<()> {
             let ir = maybe_bzkir(ir_file)?;
             let mut pk_file = BufWriter::new(File::create(prover_key)?);
             let mut vk_file = BufWriter::new(File::create(verifier_key)?);
-            let k = match &ir.version {
-                IrMinorVersion::V0 | IrMinorVersion::V1 => ZkirOld::k(&ir),
-                IrMinorVersion::V2 => ZkirOld::k(&ir),
-                _ => unreachable!("match should be exhaustive internally"),
-            };
+            let k = ir.k();
             let model = ir.model();
             write!(term, " (k={k}, rows={})", model.rows())?;
             info!(?model, "full model");
@@ -301,23 +261,9 @@ async fn main() -> anyhow::Result<()> {
             )?;
             pb.set_message(format!("Compiling circuit {ir_file:?} (k={k})"));
             pb.enable_steady_tick(Duration::from_millis(100));
-            match &ir.version {
-                IrMinorVersion::V0 | IrMinorVersion::V1 => {
-                    let (pk, vk) = ZkirOld::keygen(&ir, &pp).await?;
-                    IrSource::serialize_stdlib_v1_prover_key_to_tagged(
-                        ir.version,
-                        &pk,
-                        &mut pk_file,
-                    )?;
-                    tagged_serialize(&vk, &mut vk_file)?;
-                }
-                IrMinorVersion::V2 => {
-                    let (pk, vk) = Zkir::keygen(&ir, &pp).await?;
-                    IrSource::serialize_prover_key_to_tagged(ir.version, &pk, &mut pk_file)?;
-                    tagged_serialize(&vk, &mut vk_file)?;
-                }
-                _ => unreachable!("match should be exhaustive internally"),
-            }
+            let (pk, vk) = ir.keygen(&pp).await?;
+            tagged_serialize(&pk, &mut pk_file)?;
+            tagged_serialize(&vk, &mut vk_file)?;
             pb.finish();
         }
     }

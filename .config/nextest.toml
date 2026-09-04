@@ -1,0 +1,11 @@
+# Nextest configuration for midnight-zkir.
+
+[profile.ci]
+# The proving tests hold public parameters and proving keys in memory; running
+# them concurrently exhausts the CI runners. This keeps the serial execution the
+# previous `cargo test -- --test-threads=1` invocation relied on.
+test-threads = 1
+
+[profile.ci.junit]
+# Written to target/nextest/ci/test-results.xml and uploaded as a CI artifact.
+path = "test-results.xml"

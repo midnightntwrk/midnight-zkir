@@ -11,42 +11,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module provides zero-knowledge IR used by Compact.
-
 use anyhow::Result;
 use base_crypto::fab::Alignment;
 use midnight_proofs::dev::cost_model::CircuitModel;
-use midnight_proofs::utils::SerdeFormat;
-use midnight_zk_stdlib::MidnightPK;
 #[cfg(feature = "proptest")]
 use proptest_derive::Arbitrary;
 use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "proptest")]
 use serialize::randomised_serialization_test;
-use serialize::{
-    Deserializable, Serializable, Tagged, peek_tag, tag_enforcement_test, tagged_serialize,
-};
-use std::io::{self, Read, Seek, Write};
+use serialize::{Deserializable, Serializable, Tagged, tag_enforcement_test};
+use std::io::{self, Read};
 use std::sync::Arc;
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{
-    ParamsProverProvider, Proof, ProofPreimage, ProverKey, ProvingError, TranscriptHash,
-    VerifierKey, Zkir,
+    ParamsProverProvider, Proof, ProofPreimage, ProverKey, ProvingError, TranscriptHash, Zkir,
 };
 
-const PK_COMPRESSION_LEVEL: u32 = 6;
+use crate::ir_types::IrType;
 
 /// A low-level IR allowing the prover to populate circuit witnesses.
 #[cfg_attr(feature = "proptest", derive(Arbitrary))]
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize, Serializable)]
-#[tag = "ir-source[v2-generic]"]
+#[tag = "ir-source[v3-generic]"]
 pub struct IrSource {
     /// The minor version of this IR.
     pub version: IrMinorVersion,
-    /// The number of inputs, the initial elements in the memory
-    pub num_inputs: u32,
-    /// Whether or not this IR should compile a communications commitment
+    /// The list of input identifiers for this circuit
+    pub inputs: Vec<TypedIdentifier>,
+    /// The output types this circuit returns, positionally. The actual
+    /// values are produced by an `Instruction::Output` terminator whose
+    /// operand list is type-checked against this signature.
+    pub outputs: Vec<IrType>,
+    /// Whether this IR should compile a communications commitment
     pub do_communications_commitment: bool,
     /// The sequence of instructions to run in-circuit
     pub instructions: Arc<Vec<Instruction>>,
@@ -54,43 +51,8 @@ pub struct IrSource {
 tag_enforcement_test!(IrSource);
 tag_enforcement_test!(ProverKey<IrSource>);
 
-#[derive(Serializable, Clone)]
-#[tag = "ir-source[v2]"]
-pub(crate) struct OldIrSource {
-    pub(crate) num_inputs: u32,
-    pub(crate) do_communications_commitment: bool,
-    pub(crate) instructions: Arc<Vec<Instruction>>,
-}
-
-impl From<OldIrSource> for IrSource {
-    fn from(value: OldIrSource) -> Self {
-        IrSource {
-            version: IrMinorVersion::V0,
-            num_inputs: value.num_inputs,
-            do_communications_commitment: value.do_communications_commitment,
-            instructions: value.instructions,
-        }
-    }
-}
-
-impl TryFrom<&IrSource> for OldIrSource {
-    type Error = ();
-    fn try_from(value: &IrSource) -> Result<Self, ()> {
-        if value.version == IrMinorVersion::V0 {
-            Ok(OldIrSource {
-                num_inputs: value.num_inputs,
-                do_communications_commitment: value.do_communications_commitment,
-                instructions: value.instructions.clone(),
-            })
-        } else {
-            Err(())
-        }
-    }
-}
-
 #[cfg_attr(feature = "proptest", derive(Arbitrary))]
 #[derive(
-    Copy,
     Clone,
     Debug,
     Default,
@@ -99,22 +61,16 @@ impl TryFrom<&IrSource> for OldIrSource {
     serde_repr::Deserialize_repr,
     Serializable,
 )]
-#[tag = "ir-minor-version[v2]"]
+#[tag = "ir-minor-version[v3]"]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum IrMinorVersion {
-    V0,
-    V1,
     #[default]
-    V2,
+    V0,
 }
 
-#[derive(Serializable)]
-#[tag = "prover-key[v7](ir-source[v2])"]
-struct FacadeProverKey(Vec<u8>);
-
 impl Zkir for IrSource {
-    type ProverKey = MidnightPK<IrSource>;
+    type ProverKey = midnight_zk_stdlib::MidnightPK<IrSource>;
 
     fn check(
         &self,
@@ -130,364 +86,920 @@ impl Zkir for IrSource {
         pk: ProverKey<Self>,
         preimage: &ProofPreimage,
     ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
-        match self.version {
-            IrMinorVersion::V0 | IrMinorVersion::V1 => {
-                anyhow::bail!(
-                    "V0/V1 circuits must use transient_crypto_old::proofs::Zkir for proving"
-                )
-            }
-            IrMinorVersion::V2 => {
-                let inner_pk = pk
-                    .init()
-                    .map_err(|e| anyhow::anyhow!("Could not init pk: {e:?}"))?;
-                use midnight_zk_stdlib::prove;
-                let params_k = params.get_params(inner_pk.k()).await?;
-                let preproc = self.preprocess(preimage)?;
-                let pis = preproc.pis.clone();
-                let pi_skips = preproc.pi_skips.clone();
-                let proof = prove::<_, TranscriptHash>(
-                    params_k.as_ref(),
-                    &inner_pk,
-                    self,
-                    &pis,
-                    preproc,
-                    rng,
-                )?;
-                Ok((Proof(proof), pis.into_iter().map(Fr).collect(), pi_skips))
-            }
-        }
+        use midnight_zk_stdlib::prove;
+
+        let params_k = params.get_params(pk.init()?.k()).await?;
+        let preproc = self.preprocess(preimage)?;
+        let pis = preproc.pis.clone();
+        let pi_skips = preproc.pi_skips.clone();
+
+        let pk = pk
+            .init()
+            .map_err(|_| anyhow::anyhow!("Could not init pk"))?;
+
+        let proof = prove::<_, TranscriptHash>(params_k.as_ref(), &pk, self, &pis, preproc, rng)?;
+
+        Ok((Proof(proof), pis.into_iter().map(Fr).collect(), pi_skips))
     }
 
     fn k(&self) -> u8 {
-        match self.version {
-            IrMinorVersion::V0 | IrMinorVersion::V1 => {
-                use transient_crypto_old::proofs::Zkir as V1Zkir;
-                V1Zkir::k(self)
-            }
-            IrMinorVersion::V2 => midnight_zk_stdlib::optimal_k(self) as u8,
-        }
+        midnight_zk_stdlib::optimal_k(self) as u8
     }
 
     async fn keygen_vk(
         &self,
         params: &impl ParamsProverProvider,
-    ) -> Result<VerifierKey, anyhow::Error> {
-        match self.version {
-            IrMinorVersion::V0 | IrMinorVersion::V1 => {
-                anyhow::bail!(
-                    "V0/V1 circuits must use transient_crypto_old::proofs::Zkir for keygen_vk"
-                )
-            }
-            IrMinorVersion::V2 => {
-                use midnight_zk_stdlib::setup_vk;
-                let k = midnight_zk_stdlib::optimal_k(self) as u8;
-                let vk = setup_vk(params.get_params(k).await?.as_ref(), self);
-                Ok(VerifierKey::from(vk))
-            }
-        }
+    ) -> Result<transient_crypto::proofs::VerifierKey, anyhow::Error> {
+        use midnight_zk_stdlib::setup_vk;
+        Ok(transient_crypto::proofs::VerifierKey::from(setup_vk(
+            params.get_params(self.k()).await?.as_ref(),
+            self,
+        )))
     }
 
     async fn keygen(
         &self,
         params: &impl ParamsProverProvider,
-    ) -> Result<(ProverKey<Self>, VerifierKey), anyhow::Error> {
-        match self.version {
-            IrMinorVersion::V0 | IrMinorVersion::V1 => {
-                anyhow::bail!(
-                    "V0/V1 circuits must use transient_crypto_old::proofs::Zkir for keygen"
-                )
-            }
-            IrMinorVersion::V2 => self.v2_keygen(params).await,
-        }
+    ) -> Result<(ProverKey<Self>, transient_crypto::proofs::VerifierKey), anyhow::Error> {
+        use midnight_zk_stdlib::{setup_pk, setup_vk};
+        let vk = setup_vk(params.get_params(self.k()).await?.as_ref(), self);
+        let pk = setup_pk(self, &vk);
+        Ok((
+            ProverKey::from_raw(pk),
+            transient_crypto::proofs::VerifierKey::from(vk),
+        ))
     }
 
-    fn read_raw_pk(reader: impl Read) -> io::Result<Self::ProverKey> {
-        let mut reader = flate2::read::GzDecoder::new(reader);
-        let pk = MidnightPK::read(
-            &mut { &mut reader },
+    fn load_ir_from_tagged(reader: impl Read + std::io::Seek) -> std::io::Result<Self> {
+        serialize::tagged_deserialize(reader)
+    }
+
+    fn load_prover_key_from_tagged(
+        reader: impl Read + std::io::Seek,
+    ) -> std::io::Result<ProverKey<Self>> {
+        serialize::tagged_deserialize(reader)
+    }
+
+    fn read_raw_pk(reader: impl Read) -> std::io::Result<Self::ProverKey> {
+        midnight_zk_stdlib::MidnightPK::<Self>::read(
+            &mut { reader },
             midnight_proofs::utils::SerdeFormat::RawBytesUnchecked,
-        )?;
-        Ok(pk)
+        )
     }
 
-    fn write_raw_pk(writer: impl Write, pk: &Self::ProverKey) -> io::Result<()> {
-        let mut writer =
-            flate2::write::GzEncoder::new(writer, flate2::Compression::new(PK_COMPRESSION_LEVEL));
-        pk.write(&mut { writer }, SerdeFormat::RawBytesUnchecked)
+    fn write_raw_pk(writer: impl std::io::Write, pk: &Self::ProverKey) -> std::io::Result<()> {
+        pk.write(
+            &mut { writer },
+            midnight_proofs::utils::SerdeFormat::RawBytesUnchecked,
+        )
     }
+}
 
-    fn load_ir_from_tagged(reader: impl Read + Seek) -> io::Result<Self> {
-        Self::load_from_tagged(reader)
-    }
+/// An identifier for a variable in the circuit memory
+#[cfg_attr(feature = "proptest", derive(Arbitrary))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Serializable)]
+#[tag = "zkir-identifier[v1]"]
+pub struct Identifier(pub String);
 
-    fn load_prover_key_from_tagged(mut reader: impl Read + Seek) -> io::Result<ProverKey<Self>> {
-        let tag = peek_tag(&mut reader)?;
-        let expected_tag_new = <ProverKey<IrSource>>::tag();
-        let expected_tag_old = FacadeProverKey::tag();
-        if tag == expected_tag_new {
-            serialize::tagged_deserialize(&mut reader)
-        } else if tag == expected_tag_old {
-            let FacadeProverKey(data) = serialize::tagged_deserialize::<FacadeProverKey>(reader)?;
-            let mut header = Vec::new();
-            Serializable::serialize(&(data.len() as u32), &mut header)?;
-            let mut header_cursor = &header[..];
-            let mut data_cursor = &data[..];
-            let mut reader = Read::chain(&mut header_cursor, &mut data_cursor);
-            Deserializable::deserialize(&mut reader, 0)
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "expected one of '{expected_tag_new}' or '{expected_tag_old}', got '{tag}'."
-                ),
-            ))
+tag_enforcement_test!(Identifier);
+
+/// A typed identifier for a variable in the circuit memory
+#[cfg_attr(feature = "proptest", derive(Arbitrary))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Serializable)]
+#[tag = "zkir-typed-identifier[v1]"]
+pub struct TypedIdentifier {
+    pub(crate) name: Identifier,
+    #[serde(rename = "type")]
+    pub(crate) val_t: IrType,
+}
+
+tag_enforcement_test!(TypedIdentifier);
+
+/// An operand that can be either a variable reference or an immediate value
+#[cfg_attr(feature = "proptest", derive(Arbitrary))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Operand {
+    /// A reference to a variable in circuit memory
+    Variable(Identifier),
+    /// An immediate field element value
+    Immediate(Fr),
+}
+
+impl serde::Serialize for Operand {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Operand::Variable(id) => serde::Serialize::serialize(&id.0, serializer),
+            Operand::Immediate(imm) => {
+                let mut repr = imm.as_le_bytes();
+                while repr.last() == Some(&0) && repr.len() > 1 {
+                    repr.pop();
+                }
+                serializer.serialize_str(&format!("0x{}", const_hex::encode(&repr)))
+            }
         }
     }
 }
 
-/// An index referring to the circuit memory of the IR machine
-pub type Index = u32;
+impl<'de> serde::Deserialize<'de> for Operand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
 
-fn field_ser<S: serde::Serializer>(field: &Fr, serializer: S) -> Result<S::Ok, S::Error> {
-    let mut repr = field.as_le_bytes();
-    while repr.last() == Some(&0) && repr.len() > 1 {
-        repr.pop();
+        // Check if this looks like a hex immediate (starts with "0x" or "-0x")
+        let mut repr = s.as_bytes();
+        let negate = if !repr.is_empty() && repr[0] == b'-' {
+            repr = &repr[1..];
+            true
+        } else {
+            false
+        };
+
+        if repr.starts_with(b"0x") || repr.starts_with(b"0X") {
+            let hex_str = &repr[2..];
+            if hex_str.is_empty() {
+                return Err(<D::Error as serde::de::Error>::custom(
+                    "Invalid operand format: hex immediate must have at least one digit after '0x'",
+                ));
+            }
+
+            let bytes = const_hex::decode(hex_str)
+                .map_err(<D::Error as serde::de::Error>::custom)?
+                .into_iter()
+                .collect::<Vec<_>>();
+            let field = Fr::from_le_bytes(&bytes).ok_or_else(|| {
+                <D::Error as serde::de::Error>::custom("Out of range for field element")
+            })?;
+            Ok(Operand::Immediate(if negate { -field } else { field }))
+        } else {
+            // Variables must start with '%' in v3
+            if !s.starts_with('%') {
+                return Err(<D::Error as serde::de::Error>::custom(format!(
+                    "Invalid operand format: '{}'. Variables must start with '%', immediates must start with '0x'",
+                    s
+                )));
+            }
+            Ok(Operand::Variable(Identifier(s)))
+        }
     }
-    serde::Serializer::serialize_str(serializer, &const_hex::encode(&repr))
 }
 
-fn field_deser<'a, D: serde::Deserializer<'a>>(deserializer: D) -> Result<Fr, D::Error> {
-    let repr_str: String = serde::Deserialize::deserialize(deserializer)?;
-    let mut repr = repr_str.as_bytes();
-    let negate = if !repr.is_empty() && repr[0] == b'-' {
-        repr = &repr[1..];
-        true
-    } else {
-        false
-    };
-    let bytes = const_hex::decode(repr)
-        .map_err(<D::Error as serde::de::Error>::custom)?
-        .into_iter()
-        .collect::<Vec<_>>();
-    let field = Fr::from_le_bytes(&bytes)
-        .ok_or_else(|| <D::Error as serde::de::Error>::custom("Out of range for field element"))?;
-    Ok(if negate { -field } else { field })
+impl Serializable for Operand {
+    fn serialize(&self, sink: &mut impl std::io::Write) -> Result<(), std::io::Error> {
+        match self {
+            Operand::Variable(id) => {
+                // Write variant tag 0 for Variable
+                Serializable::serialize(&0u8, sink)?;
+                Serializable::serialize(id, sink)
+            }
+            Operand::Immediate(imm) => {
+                // Write variant tag 1 for Immediate
+                Serializable::serialize(&1u8, sink)?;
+                let mut repr = imm.as_le_bytes();
+                while repr.last() == Some(&0) && repr.len() > 1 {
+                    repr.pop();
+                }
+                let s = format!("0x{}", const_hex::encode(&repr));
+                Serializable::serialize(&s, sink)
+            }
+        }
+    }
+
+    fn serialized_size(&self) -> usize {
+        let variant_size = 1; // 1 byte for the variant tag
+        variant_size
+            + match self {
+                Operand::Variable(id) => id.serialized_size(),
+                Operand::Immediate(imm) => {
+                    let mut repr = imm.as_le_bytes();
+                    while repr.last() == Some(&0) && repr.len() > 1 {
+                        repr.pop();
+                    }
+                    let s = format!("0x{}", const_hex::encode(&repr));
+                    s.serialized_size()
+                }
+            }
+    }
+}
+
+impl Deserializable for Operand {
+    fn deserialize(source: &mut impl Read, _max_depth: u32) -> Result<Self, io::Error> {
+        // Read the variant tag
+        let variant_tag = <u8 as Deserializable>::deserialize(source, _max_depth)?;
+
+        match variant_tag {
+            0 => {
+                // Variable variant
+                let id = <Identifier as Deserializable>::deserialize(source, _max_depth)?;
+                Ok(Operand::Variable(id))
+            }
+            1 => {
+                // Immediate variant
+                let s: String = Deserializable::deserialize(source, _max_depth)?;
+
+                // Parse the hex string
+                let mut repr = s.as_bytes();
+                let negate = if !repr.is_empty() && repr[0] == b'-' {
+                    repr = &repr[1..];
+                    true
+                } else {
+                    false
+                };
+
+                if !repr.starts_with(b"0x") && !repr.starts_with(b"0X") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Expected hex immediate to start with '0x', got: {}", s),
+                    ));
+                }
+
+                let hex_str = &repr[2..];
+                if hex_str.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid operand format: hex immediate must have at least one digit after '0x'",
+                    ));
+                }
+
+                let bytes = const_hex::decode(hex_str)
+                    .map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+                    })?
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let field = Fr::from_le_bytes(&bytes).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Out of range for field element")
+                })?;
+                Ok(Operand::Immediate(if negate { -field } else { field }))
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid Operand variant tag: {}", variant_tag),
+            )),
+        }
+    }
+}
+
+impl Tagged for Operand {
+    fn tag() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("zkir-operand[v1]")
+    }
+
+    fn tag_unique_factor() -> String {
+        "[zkir-identifier,fr]".to_string()
+    }
+}
+tag_enforcement_test!(Operand);
+
+/// Serde helpers for the `Constant` instruction's `encoding` field. The
+/// encoding is stored as `Vec<Fr>` but (de)serialized as a list of hex
+/// immediates, reusing `Operand`'s immediate format (e.g. `["0x2a", "0x01"]`).
+mod constant_encoding {
+    use super::{Fr, Operand};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    pub(super) fn serialize<S: Serializer>(
+        values: &[Fr],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let immediates: Vec<Operand> = values.iter().map(|f| Operand::Immediate(*f)).collect();
+        immediates.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Fr>, D::Error> {
+        Vec::<Operand>::deserialize(deserializer)?
+            .into_iter()
+            .map(|op| match op {
+                Operand::Immediate(f) => Ok(f),
+                Operand::Variable(_) => Err(de::Error::custom(
+                    "constant encoding entries must be hex immediates (0x..), not variables",
+                )),
+            })
+            .collect()
+    }
 }
 
 /// An individual ZK IR instruction
 #[cfg_attr(feature = "proptest", derive(Arbitrary))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Serializable)]
 #[serde(rename_all = "snake_case", tag = "op")]
-#[tag = "ir-instruction[v2]"]
+#[tag = "ir-instruction[v3]"]
 pub enum Instruction {
-    /// Assert that `index` has value `1`. UB if `index` is not `0` or `1`.
+    /// Encodes the given value as a vector of raw Fr elements.
+    ///
+    /// This operation will result in an error if the number of outputs
+    /// is not the exact number of raw Fr elements required to represent a
+    /// value of the input type:
+    ///
+    ///  - Native:       1 output
+    ///  - Bytes32:      2 outputs (low 31 bytes, high byte)
+    ///  - JubjubPoint:  2 outputs (x and y coordinates)
+    ///  - JubjubScalar: 1 output
+    ///
+    /// Foreign-field elements encode as 2 limbs (midnight-circuits'
+    /// public-input encoding); points as x and y coordinates (2 limbs each)
+    /// followed, on Weierstrass curves only, by an is-identity flag:
+    ///
+    ///  - Secp256k1Point:  5 outputs
+    ///  - Secp256k1Base:   2 outputs
+    ///  - Secp256k1Scalar: 2 outputs
+    ///
+    ///  - Secp256r1Point:  5 outputs
+    ///  - Secp256r1Base:   2 outputs
+    ///  - Secp256r1Scalar: 2 outputs
+    ///
+    ///  - Curve25519Point:  4 outputs
+    ///  - Curve25519Base:   2 outputs
+    ///  - Curve25519Scalar: 2 outputs
+    Encode {
+        /// The value to encode
+        input: Operand,
+        /// The output variable names
+        outputs: Vec<Identifier>,
+    },
+    /// Assert that `cond` has value `1`. UB if `cond` is not `0` or `1`.
     ///
     /// No outputs
     Assert {
         /// The boolean condition being asserted
-        cond: Index,
+        cond: Operand,
     },
     /// Conditionally select a value. UB if `bit` is not `0` or `1`.
+    /// Supported on types:
+    ///  - Native
+    ///  - JubjubPoint
+    ///  - Secp256k1Point
+    ///  - Secp256k1Base
+    ///  - Secp256k1Scalar
+    ///  - Secp256r1Point
+    ///  - Secp256r1Base
+    ///  - Secp256r1Scalar
+    ///  - Curve25519Point
+    ///  - Curve25519Base
+    ///  - Curve25519Scalar
     ///
     /// Outputs one element, identical to `a` or `b`
     CondSelect {
         /// A boolean selector, if `1`, select `a`, else `b`
-        bit: Index,
+        bit: Operand,
         /// The value to select for `1`
-        a: Index,
+        a: Operand,
         /// The value to select for `0`
-        b: Index,
+        b: Operand,
+        /// The output variable name
+        output: Identifier,
     },
-    /// Constrains a value to a set number of bits.
+    /// Constrains `val` to a set number of bits.
     ///
     /// No outputs
     ConstrainBits {
         /// The value to constrain
-        var: Index,
+        val: Operand,
         /// The number of bits to constrain it to
         bits: u32,
     },
     /// Constrains two values `a` and `b` to be equal.
+    /// Supported on types:
+    ///  - Native
+    ///  - JubjubPoint
+    ///  - Secp256k1Point
+    ///  - Secp256k1Base
+    ///  - Secp256k1Scalar
+    ///  - Secp256r1Point
+    ///  - Secp256r1Base
+    ///  - Secp256r1Scalar
+    ///  - Curve25519Point
+    ///  - Curve25519Base
+    ///  - Curve25519Scalar
     ///
     /// No outputs
     ConstrainEq {
         /// The first value to constrain
-        a: Index,
+        a: Operand,
         /// The second value to constrain
-        b: Index,
+        b: Operand,
     },
-    /// Constrains a value `var` to be a boolean (`0` or `1`).
+    /// Constrains a value `val` to be a boolean (`0` or `1`).
     ///
     /// No outputs
     ConstrainToBoolean {
         /// The value to constrain
-        var: Index,
+        val: Operand,
     },
-    /// Creates a copy of a value `var`. Superfluous, but potentially useful
+    /// Creates a copy of a value `val`. Superfluous, but potentially useful
     /// in some settings, and does not extend the actual circuit.
     ///
-    /// Outputs one element, identical to `var`
+    /// Outputs one element, identical to `val`
     Copy {
-        /// The variable to copy
-        var: Index,
+        /// The variable or immediate to copy
+        val: Operand,
+        /// The output variable name
+        output: Identifier,
     },
-    /// Declares a variable as the next public input.
+    /// Conditional impact instruction - declares multiple public inputs under a guard condition.
     ///
-    /// No outputs
-    DeclarePubInput {
-        /// The variable to use for the public input
-        var: Index,
+    /// No outputs, but adds the inputs as public inputs and activity information to
+    /// [`IrSource::prove`] and [`IrSource::check`].
+    ///
+    /// In-circuit, if `guard` is `false`, instead of adding the `inputs` as public inputs,
+    /// it will add `n` zeros as public inputs (where `n` is the number of `inputs`).
+    /// This is enforced with in-circuit constraints.
+    ///
+    /// NB: Currently, we require that all `inputs` be of type `Native`.
+    /// A runtime error will be raised otherwise.
+    Impact {
+        /// The boolean condition under which the public inputs are active
+        guard: Operand,
+        /// The sequence of values to declare as public inputs
+        inputs: Vec<Operand>,
     },
-    /// A marker informing the proof assembler that a set of preceding public
-    /// inputs belong together (typically as an instruction), and whether they
-    /// are active or not.
+    /// Multiplies an elliptic curve point by a scalar.
+    /// Supported on types:
+    ///  - `JubjubPoint x JubjubScalar`
+    ///  - `Secp256k1Point x Secp256k1Scalar`
+    ///  - `Secp256r1Point x Secp256r1Scalar`
+    ///  - `Curve25519Point x Curve25519Scalar`
     ///
-    /// Every `DeclarePubInput` should be *followed* by a `PiSkip` covering it.
+    /// This operation will result in an error if the input types are not
+    /// supported.
     ///
-    /// No outputs, but adds activity information to [`IrSource::prove`] and
-    /// [`IrSource::check`].
-    PiSkip {
-        /// The boolean condition under which the public input is *not* skipped
-        ///
-        /// This is only used to inform transcript processing, serving as a marker
-        /// for which public inputs comprise an instruction.
-        guard: Option<Index>,
-        /// The number of public inputs to skip in this group
-        count: u32,
-    },
-    /// Adds two elliptic curve points. UB if either is not a valid curve point.
-    ///
-    /// Outputs 2 elements, `c_x`, `c_y`
-    EcAdd {
-        /// The affine x coordinate of `a`
-        a_x: Index,
-        /// The affine y coordinate of `a`
-        a_y: Index,
-        /// The affine x coordinate of `b`
-        b_x: Index,
-        /// The affine y coordinate of `b`
-        b_y: Index,
-    },
-    /// Multiplies an elliptic curve point by a scalar. UB if it is not a valid
-    /// curve point.
-    ///
-    /// Outputs 2 elements, `c_x`, `c_y`
+    /// Outputs 1 element, the product
     EcMul {
-        /// The affine x coordinate of `a`
-        a_x: Index,
-        /// The affine y coordinate of `a`
-        a_y: Index,
+        /// The point to be multiplied
+        a: Operand,
         /// The scalar to multiply by
-        scalar: Index,
+        scalar: Operand,
+        /// The result of multiplication
+        output: Identifier,
     },
     /// Multiplies the group generator by a scalar.
     ///
-    /// Outputs 2 elements, `c_x`, `c_y`
+    /// This operation will result in an error if the operand given as `scalar`
+    /// is not of type `JubjubScalar`.
+    ///
+    /// Outputs 1 element, the product
     EcMulGenerator {
         /// The scalar to multiply by
-        scalar: Index,
+        scalar: Operand,
+        /// The result of multiplication
+        output: Identifier,
     },
-    /// Hashes a sequence of field elements to an embedded curve point.
+    /// Hashes a sequence of field elements to a Jubjub point.
+    /// All inputs are required to be of type `Native`. Failure otherwise.
     ///
-    /// Outputs 2 elements, `c_x`, `c_y`
+    /// Outputs 1 element, the point
     HashToCurve {
         /// The values to hash to a curve point
-        inputs: Vec<Index>,
+        inputs: Vec<Operand>,
+        /// The resulting point
+        output: Identifier,
     },
-    /// Loads a constant into the circuit.
+    /// The affine coordinates of the given elliptic curve point.
+    /// On Weierstrass curves the identity has no affine coordinates, so
+    /// extracting them errors off-circuit and is unsatisfiable in-circuit.
     ///
-    /// One output, `imm`
-    LoadImm {
-        /// The constant to include
-        #[serde(serialize_with = "field_ser", deserialize_with = "field_deser")]
-        imm: Fr,
+    /// Supported on types:
+    /// * JubjubPoint
+    /// * Secp256k1Point
+    /// * Secp256r1Point
+    /// * Curve25519Point
+    ///
+    /// Outputs 2 elements, the coordinates (x, y)
+    IntoCoordinates {
+        /// The point whose coordinate are extracted
+        point: Operand,
+        /// The output variable names (x, y)
+        outputs: (Identifier, Identifier),
+    },
+    /// Reconstructs an elliptic curve point from the given affine coordinates.
+    ///
+    /// On Weierstrass curves the identity cannot be built with this instruction.
+    ///
+    /// Supported on types:
+    /// * (Native, Native):               producing a JubjubPoint
+    /// * (Secp256k1Base, Secp256k1Base): producing a Secp256k1Point
+    /// * (Secp256r1Base, Secp256r1Base): producing a Secp256r1Point
+    /// * (Curve25519Base, Curve25519Base): producing a Curve25519Point
+    ///
+    /// Outputs 1 element, the point
+    FromCoordinates {
+        /// The affine coordinates (x, y)
+        inputs: (Operand, Operand),
+        /// The output variable names
+        output: Identifier,
+    },
+    /// Transforms the given value into its 32-byte representation.
+    ///
+    /// Supported on types:
+    /// * Native
+    /// * Secp256k1Base
+    /// * Secp256k1Scalar
+    /// * Secp256r1Base
+    /// * Secp256r1Scalar
+    /// * Curve25519Base
+    /// * Curve25519Scalar
+    ///
+    /// In all the above prime fields, the 32-byte representation is the little-endian
+    /// byte encoding of the underlying (canonical) integer.
+    IntoBytes32 {
+        /// The element to be converted
+        input: Operand,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Constructs an element of the given type from its 32-byte representation.
+    ///
+    /// Supported on types:
+    /// * Native
+    /// * Secp256k1Base
+    /// * Secp256k1Scalar
+    /// * Secp256r1Base
+    /// * Secp256r1Scalar
+    /// * Curve25519Base
+    /// * Curve25519Scalar
+    ///
+    /// In all the above prime fields, the 32-byte representation is the little-endian
+    /// byte encoding of the underlying (canonical) integer.
+    ///
+    /// This operation also accepts non-canonical 32-byte representation in prime fields
+    /// by applying the relevant modular reduction.
+    FromBytes32 {
+        /// The input bytes
+        bytes: Operand,
+        /// The type to be converted into
+        #[serde(rename = "type")]
+        val_t: IrType,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Reverses the byte order of a `Bytes(n)` value.
+    ///
+    /// The input must be of type `Bytes(n)`, otherwise this operation fails. The
+    /// output is a `Bytes(n)` whose bytes are those of the input in reverse
+    /// order, i.e. the first byte becomes the last and vice versa.
+    ///
+    /// Outputs 1 element, the reversed bytes
+    Reverse {
+        /// The bytes to be reversed
+        bytes: Operand,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Extracts a contiguous sub-slice of a `Bytes(n)` value, returning a
+    /// `Bytes(len)`.
+    ///
+    /// `start` and `len` are compile-time constants; the slice covers positions
+    /// `start .. start + len`. `len` must be at least 1.
+    ///
+    /// # Errors
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if the input is not a
+    /// `Bytes(n)` value, if `len == 0`, or if `start + len > n`. Imposes no
+    /// in-circuit constraints: it selects a fixed range of wires.
+    Slice {
+        /// The byte string to slice
+        bytes: Operand,
+        /// The (constant) start position of the slice
+        start: u32,
+        /// The (constant) length of the slice (`>= 1`)
+        len: u32,
+        /// The output variable name (a `Bytes(len)`)
+        output: Identifier,
+    },
+    /// Decomposes a `Bytes32` value into two `Native` field elements.
+    ///
+    /// The first output (`low`) encodes the first 31 bytes of the input as a
+    /// little-endian native field element. The second output (`high`) encodes
+    /// the 32nd (most significant) byte as a native field element.
+    ///
+    /// This is the inverse of `Bytes32FromLowHigh`.
+    ///
+    /// This instruction imposes no off-circuit errors and no in-circuit constraints.
+    ///
+    /// # Note
+    ///
+    /// This instruction is a temporary bridge for Compact, which cannot yet deal with
+    /// `Bytes32` values directly. It is intended to be removed once Compact can handle
+    /// `Bytes32` (or `Bytes(n)`) without decomposing it into field elements.
+    Bytes32IntoLowHigh {
+        /// The input bytes
+        bytes: Operand,
+        /// The output variables: (low, high)
+        outputs: (Identifier, Identifier),
+    },
+    /// Constructs a `Bytes32` value from two `Native` field elements in low-high form.
+    ///
+    /// The first input (`low`) must encode at most 31 bytes, i.e. its value must be
+    /// less than 2^248. The second input (`high`) must encode a single byte, i.e. its
+    /// value must be less than 256. The result concatenates the first 31 bytes from `low`
+    /// with byte `high`.
+    ///
+    /// This is the inverse of `Bytes32IntoLowHigh`.
+    ///
+    /// # Errors and constraints
+    ///
+    /// Off-circuit: returns an error if `low >= 2^248` or `high >= 256`.
+    ///
+    /// In-circuit: the constraint `low < 2^248` is enforced by asserting that the
+    /// 32nd byte of the little-endian decomposition of `low` is zero, making the
+    /// circuit unsatisfiable if violated. The constraint `high < 256` is enforced
+    /// by a byte range check on `high`, also causing unsatisfiability if violated.
+    ///
+    /// # Note
+    ///
+    /// This instruction is a temporary bridge for Compact, which cannot yet deal with
+    /// `Bytes32` values directly. It is intended to be removed once Compact can handle
+    /// `Bytes32` (or `Bytes(n)`) without decomposing it into field elements.
+    Bytes32FromLowHigh {
+        /// The inputs: (low, high)
+        inputs: (Operand, Operand),
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Extracts the byte at position `index` of a `Bytes(n)` value, returning a
+    /// `Byte`.
+    ///
+    /// `index` is a compile-time constant that must lie in the range `0..n`,
+    /// where `n` is the length of the input byte string.
+    ///
+    /// # Errors
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if the input is not a
+    /// `Bytes(n)` value, or if `index >= n`. Imposes no in-circuit constraints:
+    /// it simply selects a fixed wire.
+    Nth {
+        /// The byte string to index into
+        bytes: Operand,
+        /// The (constant) position of the byte to extract, in `0..n`
+        index: u32,
+        /// The output variable name (a `Byte`)
+        output: Identifier,
+    },
+    /// Concatenates a non-empty sequence of `Byte` and/or `Bytes(m)` values into
+    /// a single `Bytes(n)` value, where `n` is the sum of the input lengths (a
+    /// `Byte` contributes 1, a `Bytes(m)` contributes `m`).
+    ///
+    /// # Errors
+    ///
+    /// Errors if `inputs` is empty, if any input is neither a `Byte` nor a
+    /// `Bytes` value, or if the resulting length exceeds `MAX_BYTES_LEN`.
+    Concat {
+        /// The `Byte`/`Bytes` values to concatenate, in order
+        inputs: Vec<Operand>,
+        /// The output variable name (a `Bytes(n)`)
+        output: Identifier,
+    },
+    /// Loads a fixed (constant) value of the given `type` into the circuit.
+    ///
+    /// `encoding` is the value's encoded form: the list of field elements that
+    /// [`crate::ir_instructions::encode::encode_offcircuit`] would produce for
+    /// it, written as hex immediates (e.g. `["0x2a"]`). Off-circuit the encoding
+    /// is decoded into a typed value; in-circuit that value is baked in with
+    /// `assign_fixed`.
+    ///
+    /// Supported on every `type`.
+    ///
+    /// # Errors
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if `encoding` is not
+    /// a valid, canonical encoding of a value of `type` (wrong number of field
+    /// elements, non-canonical field element, etc.).
+    LoadConstant {
+        /// The type of the constant
+        #[serde(rename = "type")]
+        val_t: IrType,
+        /// The encoded value, as a list of field-element immediates
+        #[serde(with = "constant_encoding")]
+        encoding: Vec<Fr>,
+        /// The output variable name
+        output: Identifier,
     },
     /// Divides with remainder by a power of two (number of bits).
     ///
-    /// Two outputs, `var >> bits`, and `var & ((1 << bits) - 1)`
+    /// Two outputs, `val >> bits`, and `val & ((1 << bits) - 1)`
+    ///
+    /// **Deprecated:** this instruction is slated for removal and should not be
+    /// used in new circuits.
     DivModPowerOfTwo {
         /// The variable to divide
-        var: Index,
+        val: Operand,
         /// The number of bits to divide by
         bits: u32,
+        /// The outputs: [division result, modulus result]
+        outputs: Vec<Identifier>,
     },
     /// Takes two inputs, `divisor` and `modulus`, and outputs
     /// `divisor << bits | modulus`, guaranteeing that the result does not
     /// overflow the field size, and that `modulus < (1 << bits)`. Inverse of
     /// `DivModPowerOfTwo`.
+    ///
+    /// **Deprecated:** this instruction is slated for removal and should not be
+    /// used in new circuits.
     ReconstituteField {
         /// The divisor of the reconstituted field element
-        divisor: Index,
+        divisor: Operand,
         /// The modulus of the reconstituted field element
-        modulus: Index,
+        modulus: Operand,
         /// The number of bits for `modulus`
         bits: u32,
-    },
-    /// Outputs a `var` from the circuit, including it in the communications
-    /// commitment.
-    ///
-    /// No outputs (at the level of the IR VM), despite the name
-    Output {
-        /// The variable to output
-        var: Index,
+        /// The output variable name
+        output: Identifier,
     },
     /// Calls a circuit-friendly hash function on a sequence of items.
     ///
     /// One output, `H(inputs)`
     TransientHash {
         /// The values to hash
-        inputs: Vec<Index>,
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
     },
     /// Calls a long-term hash function on a sequence of items with a given
     /// alignment.
     ///
-    /// One output, `H(inputs)`, in the binary format
+    /// Outputs a value of type Bytes32.
     PersistentHash {
         /// The alignment of the inputs being passed
         alignment: Alignment,
         /// The inputs to hash
-        inputs: Vec<Index>,
+        inputs: Vec<Operand>,
+        /// The output variable names
+        output: Identifier,
+    },
+    /// Evaluates the Keccak-256 hash function on a sequence of items with
+    /// a given alignment.
+    ///
+    /// Outputs a value of type Bytes32.
+    Keccak256 {
+        /// The alignment of the inputs being passed
+        alignment: Alignment,
+        /// The inputs to hash
+        inputs: Vec<Operand>,
+        /// The output variable names
+        output: Identifier,
+    },
+    /// Evaluates the SHA-512 hash function on a sequence of items with
+    /// a given alignment.
+    ///
+    /// Outputs a value of type `Bytes<64>`.
+    Sha512 {
+        /// The alignment of the inputs being passed
+        alignment: Alignment,
+        /// The inputs to hash
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
     },
     /// Tests if `a` and `b` are equal.
+    /// Supported on types:
+    ///  - Native
+    ///  - JubjubPoint
+    ///  - Secp256k1Point
+    ///  - Secp256k1Base
+    ///  - Secp256k1Scalar
+    ///  - Secp256r1Point
+    ///  - Secp256r1Base
+    ///  - Secp256r1Scalar
+    ///  - Curve25519Point
+    ///  - Curve25519Base
+    ///  - Curve25519Scalar
     ///
     /// One boolean output, `a == b`
     TestEq {
         /// The first value to check for equality
-        a: Index,
+        a: Operand,
         /// The second value to check for equality
-        b: Index,
+        b: Operand,
+        /// The output variable name
+        output: Identifier,
     },
-    /// Adds `a` and `b` in the prime field.
+    /// Adds `a` and `b`.
+    /// Supported on types:
+    ///  - Native
+    ///  - JubjubPoint
+    ///  - Secp256k1Point
+    ///  - Secp256k1Base
+    ///  - Secp256k1Scalar
+    ///  - Secp256r1Point
+    ///  - Secp256r1Base
+    ///  - Secp256r1Scalar
+    ///  - Curve25519Point
+    ///  - Curve25519Base
+    ///  - Curve25519Scalar
     ///
     /// One output `a + b`
     Add {
         /// The first value to add
-        a: Index,
+        a: Operand,
         /// The second value to add
-        b: Index,
+        b: Operand,
+        /// The output variable name
+        output: Identifier,
     },
-    /// Multiplies `a` and `b` in the prime field.
+    /// Multiplies `a` and `b`.
+    /// Supported on types:
+    ///  - Native
+    ///  - Secp256k1Base
+    ///  - Secp256k1Scalar
+    ///  - Secp256r1Base
+    ///  - Secp256r1Scalar
+    ///  - Curve25519Base
+    ///  - Curve25519Scalar
     ///
     /// One output `a * b`
     Mul {
         /// The first value to multiply
-        a: Index,
+        a: Operand,
         /// The second value to multiply
-        b: Index,
+        b: Operand,
+        /// The output variable name
+        output: Identifier,
     },
-    /// Negates `a` in the prime field.
+    /// Negates `a`.
+    /// Supported on types:
+    ///  - Native
+    ///  - JubjubPoint
+    ///  - Secp256k1Point
+    ///  - Secp256k1Base
+    ///  - Secp256k1Scalar
+    ///  - Secp256r1Point
+    ///  - Secp256r1Base
+    ///  - Secp256r1Scalar
+    ///  - Curve25519Point
+    ///  - Curve25519Base
+    ///  - Curve25519Scalar
     ///
     /// One output `-a`
     Neg {
         /// The value to negate
-        a: Index,
+        a: Operand,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Inverts `a`, results in an error if `a` is zero.
+    /// Supported on types:
+    ///  - Native
+    ///  - Secp256k1Base
+    ///  - Secp256k1Scalar
+    ///  - Secp256r1Base
+    ///  - Secp256r1Scalar
+    ///  - Curve25519Base
+    ///  - Curve25519Scalar
+    ///
+    /// One output `a^(-1)`
+    Inv {
+        /// The value to invert
+        a: Operand,
+        /// The output variable name
+        output: Identifier,
     },
     /// Boolean not gate.
     ///
     /// One output `!a`
     Not {
         /// The value to negate
-        a: Index,
+        a: Operand,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Boolean AND gate over a non-empty list of `Bool` values.
+    ///
+    /// All `inputs` must be of type `Bool`. Results in an error if the input
+    /// list is empty or if any input is not a `Bool`.
+    ///
+    /// One `Bool` output, the conjunction of all `inputs`
+    And {
+        /// The boolean values to combine
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Boolean OR gate over a non-empty list of `Bool` values.
+    ///
+    /// All `inputs` must be of type `Bool`. Results in an error if the input
+    /// list is empty or if any input is not a `Bool`.
+    ///
+    /// One `Bool` output, the disjunction of all `inputs`
+    Or {
+        /// The boolean values to combine
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Boolean XOR gate over a non-empty list of `Bool` values.
+    ///
+    /// All `inputs` must be of type `Bool`. Results in an error if the input
+    /// list is empty or if any input is not a `Bool`.
+    ///
+    /// One `Bool` output, the exclusive-or (parity) of all `inputs`
+    Xor {
+        /// The boolean values to combine
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
     },
     /// Checks if `a` < `b`, interpreting both as `bits`-bit unsigned
     /// integers. UB if `a` or `b` exceed `bits`.
@@ -495,29 +1007,77 @@ pub enum Instruction {
     /// One boolean output `a < b`
     LessThan {
         /// The first value to compare
-        a: Index,
+        a: Operand,
         /// The second value to compare
-        b: Index,
+        b: Operand,
         /// The number of bits to compare
         bits: u32,
+        /// The output variable name
+        output: Identifier,
     },
-    /// Retrieves a public input from the public transcript outputs.
+    /// Cast a Native value as a Jubjub scalar by reducing it modulo the Jubjub scalar
+    /// field order if necessary.
     ///
-    /// Outputs one element, the next public transcript output, or `0` if the
-    /// guard fails
+    /// NB: This instruction will be removed when the BigUint type becomes available.
+    JubjubScalarFromNative {
+        /// The native value to be converted.
+        native: Operand,
+        /// The output variable name.
+        output: Identifier,
+    },
+    /// Off-circuit (preprocessing):
+    /// Retrieves an input from the public transcript outputs.
+    /// Outputs one element, the next public transcript output, or a default value
+    /// if the `guard` fails.
+    ///
+    /// In-circuit:
+    /// Allows the prover to witness a free value, only constrained to respect
+    /// the type `val_t`. The `guard` DOES NOT participate in in-circuit constraints.
+    ///
+    /// NB: This instruction is essentially identical to `PrivateInput` except that
+    /// the `preprocessing` pass will consume the value from a different source
+    /// (the public transcript outputs in this case).
     PublicInput {
         /// An optional condition for retrieving the next public transcript
         /// output
-        guard: Option<Index>,
+        guard: Option<Operand>,
+        /// The type of this input
+        #[serde(rename = "type")]
+        val_t: IrType,
+        /// The output variable name
+        output: Identifier,
     },
-    /// Retrieves a private input from the private transcript outputs.
+
+    /// Off-circuit (preprocessing):
+    /// Retrieves an input from the private transcript outputs.
+    /// Outputs one element, the next private transcript output, or a default value
+    /// if the `guard` fails.
     ///
-    /// Outputs one element, the next private transcript output, or `0` if the
-    /// guard fails
+    /// In-circuit:
+    /// Allows the prover to witness a free value, only constrained to respect
+    /// the type `val_t`. The `guard` DOES NOT participate in in-circuit constraints.
+    ///
+    /// NB: This instruction is essentially identical to `PublicInput` except that
+    /// the `preprocessing` pass will consume the value from a different source
+    /// (the private transcript outputs in this case).
     PrivateInput {
         /// An optional condition for retrieving the next private transcript
         /// output
-        guard: Option<Index>,
+        guard: Option<Operand>,
+        /// The type of this input
+        #[serde(rename = "type")]
+        val_t: IrType,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Circuit terminator. Produces the circuit's return values, in
+    /// signature order, and ends execution. The operand list is type-checked
+    /// against `IrSource::outputs` (length and per-position type), then each
+    /// operand is encoded via `encode_offcircuit` / `encode_incircuit` and
+    /// pushed into the outputs accumulator.
+    Output {
+        /// The values returned, one per `IrSource::outputs[i]`.
+        vals: Vec<Operand>,
     },
 }
 tag_enforcement_test!(Instruction);
@@ -547,88 +1107,10 @@ impl Model {
 }
 
 impl IrSource {
-    /// v2 (zk-stdlib v2) key generation. Not the default; use `Zkir::keygen` for v1.
-    pub async fn v2_keygen(
-        &self,
-        params: &impl ParamsProverProvider,
-    ) -> Result<(ProverKey<Self>, VerifierKey), anyhow::Error> {
-        use midnight_zk_stdlib::{setup_pk, setup_vk};
-        let k = midnight_zk_stdlib::optimal_k(self) as u8;
-        let vk = setup_vk(params.get_params(k).await?.as_ref(), self);
-        let pk = setup_pk(self, &vk);
-        Ok((ProverKey::from_raw(pk), VerifierKey::from(vk)))
-    }
-
     /// Retrieves a model representation of this circuit.
     pub fn model(&self) -> Model {
         Model {
             model: midnight_zk_stdlib::cost_model(self, None),
-        }
-    }
-
-    /// Attempts to load from a tagged source, accepting both
-    /// `ir-source[v2-generic]` (current, with version field) and `ir-source[v2]`
-    /// (legacy, no version field).
-    pub fn load_from_tagged<R: Read + Seek>(mut reader: R) -> io::Result<Self> {
-        let tag = peek_tag(&mut reader)?;
-        let expected_tag_new = IrSource::tag();
-        let expected_tag_old = OldIrSource::tag();
-        if tag == *expected_tag_new {
-            serialize::tagged_deserialize(&mut reader)
-        } else if tag == *expected_tag_old {
-            serialize::tagged_deserialize::<OldIrSource>(reader).map(Into::into)
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "expected one of '{expected_tag_new}' or '{expected_tag_old}', got '{tag}'."
-                ),
-            ))
-        }
-    }
-
-    /// Writes out with tag, preserving v0's old tag structure.
-    pub fn serialize_to_tagged<W: Write>(&self, writer: W) -> io::Result<()> {
-        if let Ok(old_ir) = OldIrSource::try_from(self) {
-            serialize::tagged_serialize(&old_ir, writer)
-        } else {
-            serialize::tagged_serialize(self, writer)
-        }
-    }
-
-    /// Writes out a prover key with tag, preserving v0's old tag structure.
-    pub fn serialize_prover_key_to_tagged<W: Write>(
-        version: IrMinorVersion,
-        pk: &ProverKey<Self>,
-        writer: W,
-    ) -> io::Result<()> {
-        match version {
-            IrMinorVersion::V0 => {
-                let mut raw = Vec::new();
-                Serializable::serialize(pk, &mut raw)?;
-                let container = <Vec<u8> as Deserializable>::deserialize(&mut &raw[..], 0)?;
-                let facade = FacadeProverKey(container);
-                tagged_serialize(&facade, writer)
-            }
-            IrMinorVersion::V1 | IrMinorVersion::V2 => tagged_serialize(pk, writer),
-        }
-    }
-
-    /// Writes out a stdlib-v1 prover key with tag, preserving v0's old tag structure.
-    pub fn serialize_stdlib_v1_prover_key_to_tagged<W: Write>(
-        version: IrMinorVersion,
-        pk: &transient_crypto_old::proofs::ProverKey<Self>,
-        writer: W,
-    ) -> io::Result<()> {
-        match version {
-            IrMinorVersion::V0 => {
-                let mut raw = Vec::new();
-                Serializable::serialize(pk, &mut raw)?;
-                let container = <Vec<u8> as Deserializable>::deserialize(&mut &raw[..], 0)?;
-                let facade = FacadeProverKey(container);
-                tagged_serialize(&facade, writer)
-            }
-            IrMinorVersion::V1 | IrMinorVersion::V2 => tagged_serialize(pk, writer),
         }
     }
 
@@ -647,8 +1129,8 @@ impl IrSource {
                 )?;
                 match ver {
                     SerdeVersion {
-                        major: 2,
-                        minor: 0..=2,
+                        major: 3,
+                        minor: 0..=0,
                     } => {
                         obj.insert(
                             "version".into(),
@@ -680,15 +1162,14 @@ impl IrSource {
     ) -> Result<Proof> {
         use midnight_zk_stdlib::prove;
 
-        let inner_pk = pk
+        let params_k = params.get_params(pk.init()?.k()).await?;
+        let pis = preproc.pis.clone();
+
+        let pk = pk
             .init()
             .map_err(|_| anyhow::anyhow!("Could not init pk"))?;
 
-        let params_k = params.get_params(inner_pk.k()).await?;
-        let pis = preproc.pis.clone();
-
-        let proof =
-            prove::<_, TranscriptHash>(params_k.as_ref(), &inner_pk, self, &pis, preproc, rng)?;
+        let proof = prove::<_, TranscriptHash>(params_k.as_ref(), &pk, self, &pis, preproc, rng)?;
 
         Ok(Proof(proof))
     }

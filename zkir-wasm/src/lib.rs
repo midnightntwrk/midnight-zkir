@@ -15,8 +15,8 @@
 use hex::FromHex;
 use js_sys::{BigInt, Function, JsString, Promise, Uint8Array};
 use rand::rngs::OsRng;
-use serialize::{peek_tag, tagged_deserialize, tagged_serialize};
-use transient_crypto::proofs::Zkir as ZkirNew;
+use serialize::{tagged_deserialize, tagged_serialize};
+use transient_crypto::proofs::Zkir as ZkirTrait;
 use transient_crypto::{
     curve::Fr,
     proofs::{
@@ -24,10 +24,8 @@ use transient_crypto::{
         Resolver,
     },
 };
-use transient_crypto_old::proofs::Zkir as ZkirOld;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use zkir::{IrMinorVersion, IrSource};
 
 struct JsKeyProvider(JsValue);
 
@@ -65,35 +63,6 @@ fn call_provider(provider: &JsValue, name: &str, arg: &JsValue) -> Result<Promis
         .map_err(|_| JsError::new(&format!("result of {name} was not a promise")))
 }
 
-impl transient_crypto_old::proofs::ParamsProverProvider for JsKeyProvider {
-    async fn get_params(
-        &self,
-        k: u8,
-    ) -> std::io::Result<transient_crypto_old::proofs::ParamsProver> {
-        let get_params = js_sys::Reflect::get(&self.0, &"getParams".into())
-            .map_err(|_| err("could not get property 'getParams' on KeyMaterialProvider"))?
-            .dyn_into::<Function>()
-            .map_err(|_| err("property 'getParams' on KeyMaterialProvider is not a function"))?;
-        let promise = get_params
-            .call1(&self.0, &JsValue::from(k))
-            .map_err(|e| err(format!("error calling getParams: {}", try_to_string(e))))?
-            .dyn_into::<Promise>()
-            .map_err(|_| err("result of getParams was not a promise"))?;
-        let res = JsFuture::from(promise)
-            .await
-            .map_err(|e| {
-                err(format!(
-                    "getParams promise resolved to error: {}",
-                    try_to_string(e)
-                ))
-            })?
-            .dyn_into::<Uint8Array>()
-            .map_err(|_| err("result of getParams was not a Uint8Array"))?
-            .to_vec();
-        transient_crypto_old::proofs::ParamsProver::read(&res[..])
-    }
-}
-
 impl ParamsProverProvider for JsKeyProvider {
     async fn get_params(&self, k: u8) -> std::io::Result<ParamsProver> {
         let get_params = js_sys::Reflect::get(&self.0, &"getParams".into())
@@ -117,22 +86,6 @@ impl ParamsProverProvider for JsKeyProvider {
             .map_err(|_| err("result of getParams was not a Uint8Array"))?
             .to_vec();
         ParamsProver::read(&res[..])
-    }
-}
-
-impl transient_crypto_old::proofs::Resolver for JsKeyProvider {
-    async fn resolve_key(
-        &self,
-        key: transient_crypto_old::proofs::KeyLocation,
-    ) -> std::io::Result<Option<transient_crypto_old::proofs::ProvingKeyMaterial>> {
-        let pkm = <Self as Resolver>::resolve_key(self, KeyLocation(key.0)).await?;
-        Ok(
-            pkm.map(|pkm| transient_crypto_old::proofs::ProvingKeyMaterial {
-                prover_key: pkm.prover_key,
-                verifier_key: pkm.verifier_key,
-                ir_source: pkm.ir_source,
-            }),
-        )
     }
 }
 
@@ -212,39 +165,15 @@ pub async fn prove(
         preimage.binding_input = fr_from_bigint(bi)?;
     }
     let provider = JsKeyProvider(provider);
-    let vk = provider
-        .resolve_key(preimage.key_location.clone())
-        .await?
-        .ok_or_else(|| {
-            JsError::new(&format!(
-                "failed to resolve key location: {}",
-                preimage.key_location.0
-            ))
-        })?
-        .verifier_key;
-    let tag = peek_tag(&mut std::io::Cursor::new(&vk))?;
+
+    let proof = preimage
+        .prove::<zkir::IrSource>(OsRng, &provider, &provider)
+        .await
+        .map(|(proof, _)| proof)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
     let mut res = Vec::new();
-    match tag.as_str() {
-        "verifier-key[v6]" => {
-            let preimage: transient_crypto_old::proofs::ProofPreimage =
-                tagged_deserialize(&mut &ser_preimage.to_vec()[..])?;
-            let proof = preimage
-                .prove::<IrSource>(OsRng, &provider, &provider)
-                .await
-                .map_err(|e| JsError::new(&e.to_string()))?
-                .0;
-            tagged_serialize(&proof, &mut res)?;
-        }
-        "verifier-key[v7]" => {
-            let proof = preimage
-                .prove::<IrSource>(OsRng, &provider, &provider)
-                .await
-                .map_err(|e| JsError::new(&e.to_string()))?
-                .0;
-            tagged_serialize(&proof, &mut res)?;
-        }
-        _ => return Err(JsError::new(&format!("unknown verifier key tag: '{tag}'"))),
-    }
+    tagged_serialize(&proof, &mut res)?;
     Ok(Uint8Array::from(&res[..]))
 }
 
@@ -258,25 +187,13 @@ pub async fn check(ser_preimage: Uint8Array, provider: JsValue) -> Result<Vec<Js
             preimage.key_location.0
         )));
     };
-    let ir = IrSource::load_from_tagged(std::io::Cursor::new(&data.ir_source[..]))?;
-    let res = match &ir.version {
-        IrMinorVersion::V0 | IrMinorVersion::V1 => {
-            let preimage: transient_crypto_old::proofs::ProofPreimage =
-                tagged_deserialize(&mut &ser_preimage.to_vec()[..])?;
-            preimage
-                .check(&ir)
-                .map_err(|e| JsError::new(&e.to_string()))?
-        }
-        IrMinorVersion::V2 => preimage
-            .check(&ir)
-            .map_err(|e| JsError::new(&e.to_string()))?,
-        _ => {
-            return Err(JsError::new(&format!(
-                "unsupported ZKIR minor version: {:?}",
-                ir.version
-            )));
-        }
-    };
+
+    let ir = tagged_deserialize::<zkir::IrSource>(&data.ir_source[..])
+        .map_err(|e| JsError::new(&format!("Failed to deserialize ZKIR v3: {}", e)))?;
+    let res = preimage
+        .check(&ir)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
     Ok(res
         .into_iter()
         .map(|val| match val {
@@ -338,7 +255,7 @@ pub fn json_ir_to_binary(json: &str) -> Result<Uint8Array, JsError> {
 }
 
 #[wasm_bindgen]
-struct Zkir(IrSource);
+struct Zkir(zkir::IrSource);
 
 #[wasm_bindgen]
 impl Zkir {
@@ -351,28 +268,24 @@ impl Zkir {
 
     #[wasm_bindgen(js_name = "getK")]
     pub fn get_k(&self) -> u8 {
-        match self.0.version {
-            IrMinorVersion::V0 | IrMinorVersion::V1 => ZkirOld::k(&self.0),
-            IrMinorVersion::V2 => ZkirNew::k(&self.0),
-            _ => unreachable!("unsupported minor version"),
-        }
+        self.0.k()
     }
 
     #[wasm_bindgen(js_name = "fromJson")]
     pub fn from_json(json: &str) -> Result<Self, JsError> {
-        let ir: IrSource = IrSource::load(json.as_bytes())?;
+        let ir = zkir::IrSource::load(json.as_bytes())?;
         Ok(Self(ir))
     }
 
     #[wasm_bindgen]
     pub fn deserialize(bytes: Uint8Array) -> Result<Self, JsError> {
-        let ir = IrSource::load_from_tagged(std::io::Cursor::new(&bytes.to_vec()[..]))?;
+        let ir = tagged_deserialize::<zkir::IrSource>(&mut &bytes.to_vec()[..])?;
         Ok(Self(ir))
     }
 
     pub fn serialize(&self) -> Result<Uint8Array, JsError> {
         let mut buf = Vec::new();
-        self.0.serialize_to_tagged(&mut buf)?;
+        tagged_serialize(&self.0, &mut buf)?;
         Ok(buf[..].into())
     }
 }

@@ -13,6 +13,14 @@ default-members = [
 license = "Apache-2.0"
 repository = "https://github.com/midnightntwrk/midnight-zkir"
 
+# Used by the nix wasm packaging (bagel.nix); same settings as midnight-ledger.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
 # base-crypto 1.1.0, serialize 1.2.0, and transient-crypto 3.0.0 are not yet
 # published to crates.io; resolve them from the midnight-ledger repository, at
 # the parent of the zkir-v3-3.0.0-rc.1 tag this workspace was extracted from

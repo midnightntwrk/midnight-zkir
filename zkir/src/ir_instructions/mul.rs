@@ -26,6 +26,7 @@ use crate::{
 /// Multiplies off-circuit the given inputs.
 /// Multiplication is supported on:
 ///   - `Native`
+///   - `JubjubScalar`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
 ///   - `Secp256r1Base`
@@ -40,6 +41,8 @@ pub fn mul_offcircuit(x: &IrValue, y: &IrValue) -> Result<IrValue, anyhow::Error
     use IrValue::*;
     match (x, y) {
         (Native(a), Native(b)) => Ok(Native(*a * *b)),
+        (JubjubScalar(s), JubjubScalar(r)) => Ok(JubjubScalar(*s * *r)),
+
         (Secp256k1Base(s), Secp256k1Base(r)) => Ok(Secp256k1Base(*s * *r)),
         (Secp256k1Scalar(s), Secp256k1Scalar(r)) => Ok(Secp256k1Scalar(*s * *r)),
 
@@ -60,6 +63,7 @@ pub fn mul_offcircuit(x: &IrValue, y: &IrValue) -> Result<IrValue, anyhow::Error
 /// Multiplies in-circuit the given inputs.
 /// Multiplication is supported on:
 ///   - `Native`
+///   - `JubjubScalar`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
 ///   - `Secp256r1Base`
@@ -82,6 +86,11 @@ pub fn mul_incircuit(
             let r = std_lib.mul(layouter, a, b, None)?;
             Ok(Native(r))
         }
+        (JubjubScalar(a), JubjubScalar(b)) => {
+            let r = ArithInstructions::mul(std_lib.jubjub(), layouter, a, b, None)?;
+            Ok(JubjubScalar(r))
+        }
+
         (Secp256k1Base(a), Secp256k1Base(b)) => {
             let r = (std_lib.secp256k1().base_field_chip()).mul(layouter, a, b, None)?;
             Ok(Secp256k1Base(r))
@@ -129,7 +138,7 @@ impl Mul for IrValue {
 #[cfg(test)]
 mod tests {
     use group::ff::Field;
-    use midnight_curves::{curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, curve25519, k256, p256};
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
 
@@ -142,6 +151,17 @@ mod tests {
         let [x, y] = core::array::from_fn(|_| Fr(F::random(OsRng)));
 
         assert_eq!(Native(x) * Native(y), Native(x * y));
+
+        let [r, s] = core::array::from_fn(|_| JubjubFr::random(OsRng));
+        assert_eq!(JubjubScalar(r) * JubjubScalar(s), JubjubScalar(r * s));
+
+        // Negative test: multiplying across scalar fields should fail
+        let result = mul_offcircuit(&JubjubScalar(r), &Native(x));
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Unsupported multiplication: JubjubScalar x Native"
+        );
 
         let [x, y] = core::array::from_fn(|_| k256::Fp::random(OsRng));
         let [r, s] = core::array::from_fn(|_| k256::Fq::random(OsRng));

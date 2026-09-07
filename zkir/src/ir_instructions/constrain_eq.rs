@@ -27,6 +27,7 @@ use crate::{
 ///   - `Byte`
 ///   - `Bytes(n)`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -66,6 +67,7 @@ pub fn constrain_eq_offcircuit(a: &IrValue, b: &IrValue) -> Result<(), anyhow::E
 ///   - `Byte`
 ///   - `Bytes(n)`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -99,6 +101,7 @@ pub fn constrain_eq_incircuit(
             .try_for_each(|(x, y)| std_lib.assert_equal(layouter, x, y)),
 
         (JubjubPoint(p), JubjubPoint(q)) => std_lib.jubjub().assert_equal(layouter, p, q),
+        (JubjubScalar(s), JubjubScalar(r)) => std_lib.jubjub().assert_equal(layouter, s, r),
 
         (Secp256k1Point(p), Secp256k1Point(q)) => std_lib.secp256k1().assert_equal(layouter, p, q),
         (Secp256k1Base(s), Secp256k1Base(r)) => {
@@ -138,7 +141,7 @@ pub fn constrain_eq_incircuit(
 mod tests {
     use group::Group;
     use group::ff::Field;
-    use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, JubjubSubgroup, curve25519, k256, p256};
     use rand::Rng;
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
@@ -167,6 +170,11 @@ mod tests {
         let p = JubjubSubgroup::random(OsRng);
         assert!(constrain_eq_offcircuit(&JubjubPoint(p), &JubjubPoint(p)).is_ok());
         assert!(constrain_eq_offcircuit(&Native(x), &JubjubPoint(p)).is_err());
+
+        let s = JubjubFr::random(OsRng);
+        assert!(constrain_eq_offcircuit(&JubjubScalar(s), &JubjubScalar(s)).is_ok());
+        assert!(constrain_eq_offcircuit(&JubjubScalar(s), &JubjubScalar(-s)).is_err());
+        assert!(constrain_eq_offcircuit(&JubjubScalar(s), &JubjubPoint(p)).is_err());
 
         let p = k256::K256::random(OsRng);
         let s = k256::Fp::random(OsRng);

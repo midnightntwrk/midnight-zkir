@@ -28,6 +28,7 @@ use crate::{
 ///   - `Byte`
 ///   - `Bytes(n)`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -49,6 +50,7 @@ pub fn test_eq_offcircuit(a: &IrValue, b: &IrValue) -> Result<bool, anyhow::Erro
         (Byte(a), Byte(b)) => Ok(a == b),
         (Bytes(xs), Bytes(ys)) => Ok(xs == ys),
         (JubjubPoint(p), JubjubPoint(q)) => Ok(p == q),
+        (JubjubScalar(s), JubjubScalar(r)) => Ok(s == r),
 
         (Secp256k1Point(p), Secp256k1Point(q)) => Ok(p == q),
         (Secp256k1Base(s), Secp256k1Base(r)) => Ok(s == r),
@@ -77,6 +79,7 @@ pub fn test_eq_offcircuit(a: &IrValue, b: &IrValue) -> Result<bool, anyhow::Erro
 ///   - `Byte`
 ///   - `Bytes(n)` (both operands must have the same length)
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -112,6 +115,7 @@ pub fn test_eq_incircuit(
         }
 
         (JubjubPoint(p), JubjubPoint(q)) => std_lib.jubjub().is_equal(layouter, p, q),
+        (JubjubScalar(s), JubjubScalar(r)) => std_lib.jubjub().is_equal(layouter, s, r),
 
         (Secp256k1Point(p), Secp256k1Point(q)) => std_lib.secp256k1().is_equal(layouter, p, q),
         (Secp256k1Base(s), Secp256k1Base(r)) => {
@@ -148,7 +152,7 @@ pub fn test_eq_incircuit(
 mod tests {
     use group::Group;
     use group::ff::Field;
-    use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, JubjubSubgroup, curve25519, k256, p256};
     use rand::Rng;
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
@@ -177,6 +181,11 @@ mod tests {
         let p = JubjubSubgroup::random(OsRng);
         assert!(test_eq_offcircuit(&JubjubPoint(p), &JubjubPoint(p)).unwrap());
         assert!(test_eq_offcircuit(&Native(x), &JubjubPoint(p)).is_err());
+
+        let s = JubjubFr::random(OsRng);
+        assert!(test_eq_offcircuit(&JubjubScalar(s), &JubjubScalar(s)).unwrap());
+        assert!(!test_eq_offcircuit(&JubjubScalar(s), &JubjubScalar(-s)).unwrap());
+        assert!(test_eq_offcircuit(&JubjubScalar(s), &JubjubPoint(p)).is_err());
 
         let p = k256::K256::random(OsRng);
         let s = k256::Fp::random(OsRng);

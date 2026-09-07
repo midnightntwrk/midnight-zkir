@@ -27,6 +27,7 @@ use crate::{
 /// Addition is supported on:
 ///   - `Native`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -45,6 +46,7 @@ pub fn add_offcircuit(x: &IrValue, y: &IrValue) -> Result<IrValue, anyhow::Error
     match (x, y) {
         (Native(a), Native(b)) => Ok(Native(*a + *b)),
         (JubjubPoint(p), JubjubPoint(q)) => Ok(JubjubPoint(p + q)),
+        (JubjubScalar(s), JubjubScalar(r)) => Ok(JubjubScalar(s + r)),
 
         (Secp256k1Point(p), Secp256k1Point(q)) => Ok(Secp256k1Point(*p + q)),
         (Secp256k1Base(s), Secp256k1Base(r)) => Ok(Secp256k1Base(*s + r)),
@@ -70,6 +72,7 @@ pub fn add_offcircuit(x: &IrValue, y: &IrValue) -> Result<IrValue, anyhow::Error
 /// Addition is supported on:
 ///   - `Native`
 ///   - `JubjubPoint`
+///   - `JubjubScalar`
 ///   - `Secp256k1Point`
 ///   - `Secp256k1Base`
 ///   - `Secp256k1Scalar`
@@ -98,6 +101,10 @@ pub fn add_incircuit(
         (JubjubPoint(p), JubjubPoint(q)) => {
             let r = EccInstructions::add(std_lib.jubjub(), layouter, p, q)?;
             Ok(JubjubPoint(r))
+        }
+        (JubjubScalar(a), JubjubScalar(b)) => {
+            let r = ArithInstructions::add(std_lib.jubjub(), layouter, a, b)?;
+            Ok(JubjubScalar(r))
         }
 
         (Secp256k1Point(p), Secp256k1Point(q)) => {
@@ -160,7 +167,7 @@ impl Add for IrValue {
 mod tests {
     use group::Group;
     use group::ff::Field;
-    use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, JubjubSubgroup, curve25519, k256, p256};
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
 
@@ -182,6 +189,17 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "Unsupported addition: Native + JubjubPoint"
+        );
+
+        let [r, s] = core::array::from_fn(|_| JubjubFr::random(OsRng));
+        assert_eq!(JubjubScalar(r) + JubjubScalar(s), JubjubScalar(r + s));
+
+        // Negative test: a Jubjub scalar is not addable to a Jubjub point
+        let result = add_offcircuit(&JubjubScalar(r), &JubjubPoint(p));
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Unsupported addition: JubjubScalar + JubjubPoint"
         );
 
         let [p, q] = core::array::from_fn(|_| k256::K256::random(OsRng));

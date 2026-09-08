@@ -170,14 +170,26 @@
             buildPhase = ''
               for contract in *; do
                 mv "$contract" "$contract-tmp"
-                mkdir -p "$contract/keys"
-                mv $contract-tmp "$contract/zkir"
+                mkdir -p "$contract/zkir" "$contract/keys"
+                mv "$contract-tmp"/*.zkir "$contract/zkir"
                 VERSION=$(jq -s '.[0].version.major' $contract/zkir/*.zkir)
                 if [[ "$VERSION" == "2" ]]; then
                   ${packages.zkir}/bin/zkir compile-many "$contract/zkir" "$contract/keys"
                 elif [[ "$VERSION" == "3" ]]; then
                   ${packages.zkir-v3}/bin/zkir compile-many "$contract/zkir" "$contract/keys"
                 fi
+                # The committed *.prover.sha256/*.verifier.sha256 files pin the
+                # compiled key bytes (deployed verifiers hold those exact
+                # bytes); a toolchain change that shifts them must fail here
+                # rather than propagate. See also zkir/tests/precompile_hashes.rs.
+                (cd "$contract/keys" && sha256sum --check --quiet ../../"$contract-tmp"/*.sha256)
+                # Ship a .sha256 alongside every artifact; downstream consumers
+                # (e.g. midnight-ledger's local-params) distribute these files
+                # with the artifacts.
+                for dir in "$contract/zkir" "$contract/keys"; do
+                  (cd "$dir" && for file in *; do sha256sum "$file" > "$file.sha256"; done)
+                done
+                rm -r "$contract-tmp"
               done
             '';
             installPhase = ''

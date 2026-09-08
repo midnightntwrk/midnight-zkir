@@ -20,11 +20,11 @@ repository = "https://github.com/midnightntwrk/midnight-zkir"
 # come from the same rev so their interlinked path dependencies unify to a single
 # source.
 [patch.crates-io]
-midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "4cec98a064eae60e8be6171f07bed148ce00b01d" }
-midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "4cec98a064eae60e8be6171f07bed148ce00b01d" }
-midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "4cec98a064eae60e8be6171f07bed148ce00b01d" }
+midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "d103e75b181386a287a66a5fa55be5bf9b05d497" }
+midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "d103e75b181386a287a66a5fa55be5bf9b05d497" }
+midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "d103e75b181386a287a66a5fa55be5bf9b05d497" }
 # Not needed for the build itself, but without this transient-crypto pulls
 # storage-core (and its macro crates) from crates.io at the same name+version
 # as the git copies above, and nix's importCargoLock cannot vendor the same
 # name+version from two sources.
-midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "4cec98a064eae60e8be6171f07bed148ce00b01d" }
+midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "d103e75b181386a287a66a5fa55be5bf9b05d497" }

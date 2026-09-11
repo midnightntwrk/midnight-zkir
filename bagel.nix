@@ -22,6 +22,9 @@
   scope ? "@midnightntwrk",
   repo ? "https://github.com/midnightntwrk/midnight-zkir",
   version,
+  # Source filename of the hand-crafted .d.ts (relative to `path`); it is
+  # published as ${package-name}.d.ts regardless of its name here.
+  dts ? "${package-name}.d.ts",
   extraBuildInputs ? [],
   extraVariables ? {},
   src,
@@ -73,7 +76,7 @@ in pkgs.stdenvNoCC.mkDerivation {
       node assemble-dts.js ${builtins.concatStringsSep " " features}
       popd
     fi
-    cp ${path}/${package-name}.d.ts pkg/${package-name}.d.ts
+    cp ${path}/${dts} pkg/${package-name}.d.ts
     # We create a manual `package.json` that points to the correct exports.
     cat <<-EOF > pkg/package.json
       {

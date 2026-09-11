@@ -128,12 +128,16 @@
 
           packages.zkir = mkZkir { pname = "zkir"; crate = "midnight-zkir"; };
 
-          # The @midnightntwrk/zkir-v2 wasm bindings as an npm package;
-          # consumed by midnight-ledger's integration tests for local proving.
+          # The @midnightntwrk/zkir-v3 wasm bindings as an npm package;
+          # consumed downstream (e.g. compact's test-center) for local
+          # proving. The npm package keeps the -v3 suffix because consumers
+          # import v2 and v3 side by side; the crate itself is just "zkir"
+          # with the major version distinguishing v2 from v3.
           packages.zkir-wasm = bagel-wasm {
             name = "zkir-wasm";
             crate-name = "midnight-zkir-wasm";
-            package-name = "zkir-v2";
+            package-name = "zkir-v3";
+            dts = "zkir.d.ts";
             path = "zkir-wasm";
             src = rustWorkspaceSrc;
             version = (builtins.fromTOML (builtins.readFile ./zkir-wasm/Cargo.toml)).package.version;

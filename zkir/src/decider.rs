@@ -35,6 +35,7 @@ use midnight_proofs::{
     utils::SerdeFormat,
 };
 use midnight_zk_stdlib::{MidnightVK, ZkStdLib};
+use serialize::GLOBAL_TAG;
 use transient_crypto::curve::outer;
 use transient_crypto::proofs::{
     InnerSelfEmulation as S, accumulator_pi_len, reconstruct_accumulator,
@@ -66,21 +67,18 @@ pub enum DeciderKind {
 }
 
 impl DeciderKind {
-    fn tag(self) -> u8 {
+    pub fn tag(self) -> u8 {
         match self {
             DeciderKind::None => 0,
             DeciderKind::Collapsed => 1,
         }
     }
 
-    fn from_tag(tag: u8) -> anyhow::Result<Self> {
+    pub fn from_tag(tag: u8) -> anyhow::Result<Self> {
         match tag {
             0 => Ok(DeciderKind::None),
             1 => Ok(DeciderKind::Collapsed),
-            other => bail!(
-                "unknown decider tag {other} in a `verify_proof_vks` entry: a ledger that does \
-                 not know how to finish a proof must refuse it"
-            ),
+            other => bail!("unknown decider byte {other}: expected 0 (none) or 1 (collapsed)"),
         }
     }
 }
@@ -110,6 +108,34 @@ pub fn deserialize_vk(blob: &[u8]) -> anyhow::Result<(DeciderKind, MidnightVK)> 
         );
     }
     Ok((kind, vk))
+}
+
+/// Re-encodes a verifying key as the `verify_proof_vks` entry that
+/// [`deserialize_vk`] expects: the decider byte, then the processed key.
+///
+/// These bytes reach circuit synthesis, not just the side table. Their digest
+/// names the inner key's fixed bases in the outer circuit, so a producer that
+/// encodes them differently does not get a missing-key error -- it gets a
+/// different circuit.
+///
+/// The input is the processed key alone, as midnight-zk writes it. A key
+/// carrying the tagged framing the ZKIR and ledger toolchains write is refused
+/// rather than unwrapped: nothing proves a ZKIR circuit with the Poseidon
+/// transcript `verify_proof` replays, so such a key has no proof that could
+/// satisfy it, and unwrapping would only move the failure from here to proving.
+pub fn inner_vk_from_verifier_key(file: &[u8], kind: DeciderKind) -> anyhow::Result<Vec<u8>> {
+    if file.starts_with(GLOBAL_TAG.as_bytes()) {
+        bail!(
+            "this is a tagged verifying key, the framing the ZKIR and ledger toolchains write; \
+             an inner verifying key is the processed key alone, as midnight-zk writes it"
+        );
+    }
+    let mut blob = vec![kind.tag()];
+    blob.extend_from_slice(file);
+    // Round-trip rather than trust the concatenation, so a key the instruction
+    // cannot read fails here instead of at keygen.
+    deserialize_vk(&blob)?;
+    Ok(blob)
 }
 
 /// Public-input encoding of a resolved, collapsed accumulator.

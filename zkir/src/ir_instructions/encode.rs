@@ -65,7 +65,9 @@ pub fn encode_offcircuit(value: &IrValue) -> Vec<IrValue> {
         IrValue::Secp256k1Base(s) => AssignedField::<F, k256::Fp, MEP>::as_public_input(s),
         IrValue::Secp256k1Scalar(s) => AssignedField::<F, k256::Fq, MEP>::as_public_input(s),
 
-        IrValue::Secp256r1Point(p) => AssignedForeignPoint::<F, p256::P256, MEP>::as_public_input(p),
+        IrValue::Secp256r1Point(p) => {
+            AssignedForeignPoint::<F, p256::P256, MEP>::as_public_input(p)
+        }
         IrValue::Secp256r1Base(s) => AssignedField::<F, p256::Fp, MEP>::as_public_input(s),
         IrValue::Secp256r1Scalar(s) => AssignedField::<F, p256::Fq, MEP>::as_public_input(s),
 
@@ -274,9 +276,7 @@ pub fn jubjub_scalar_from_biguint(
 #[cfg(test)]
 mod tests {
     use group::{Group, ff::Field};
-    use midnight_curves::{
-        JubjubSubgroup, curve25519::Curve25519Subgroup, k256::K256, p256::P256,
-    };
+    use midnight_curves::{JubjubSubgroup, curve25519::Curve25519Subgroup, k256::K256, p256::P256};
     use rand_chacha::rand_core::OsRng;
 
     use super::*;

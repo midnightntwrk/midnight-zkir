@@ -37,6 +37,19 @@ export function provingProvider(kmProvider: KeyMaterialProvider): ProvingProvide
 
 export function jsonIrToBinary(json: String): Uint8Array;
 
+/**
+ * Checks an inner proof against a key and instance, throwing if it is
+ * malformed, keyed wrongly, or paired with the wrong instance.
+ *
+ * Stops short of the pairing that decides whether a well-formed proof is true,
+ * so a false proof passes here and fails later at the ledger.
+ */
+export function checkInnerProof(
+    vkBlob: Uint8Array,
+    instance: bigint[],
+    proof: Uint8Array,
+): void;
+
 export class Zkir {
   static fromJson(json: string): Zkir;
   static deserialize(bytes: Uint8Array): Zkir;

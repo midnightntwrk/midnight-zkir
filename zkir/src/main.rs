@@ -18,6 +18,7 @@ use base_crypto::data_provider::{self, MidnightDataProvider};
 use clap::{Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use midnight_zkir::IrSource;
+use midnight_zkir::decider::{DeciderKind, inner_vk_from_verifier_key};
 use serialize::{tagged_deserialize, tagged_serialize};
 use std::ffi::OsString;
 use std::fs::File;
@@ -65,6 +66,19 @@ enum Subcommands {
         ir_dir: PathBuf,
         /// The output key directory
         key_dir: PathBuf,
+    },
+    /// Re-encode a verifier key as the `verify_proof_vks` entry an inner proof
+    /// is verified against
+    InnerVk {
+        /// Which deferred obligation the inner proof carries: 0 for none, 1 for
+        /// a collapsed accumulator in the tail of its instance. Declaring 0 for
+        /// a proof that carries one is a silent soundness bug.
+        #[arg(long, default_value_t = 0)]
+        decider: u8,
+        /// The `.verifier` file to read
+        verifier_key: PathBuf,
+        /// The blob to write
+        output: PathBuf,
     },
     /// Generate prover and verifier keys
     Compile {
@@ -144,6 +158,9 @@ async fn main() -> anyhow::Result<()> {
                     .ok();
             }
         }
+        // A re-encoding does its work in one call and reports through its exit
+        // status, so it has no verbosity to turn on.
+        Subcommands::InnerVk { .. } => {}
     }
 
     match &args.command {
@@ -228,6 +245,21 @@ async fn main() -> anyhow::Result<()> {
                 overall.set_position(prog);
             }
             overall.finish();
+        }
+        Subcommands::InnerVk {
+            decider,
+            verifier_key,
+            output,
+        } => {
+            let kind = match *decider {
+                0 => DeciderKind::None,
+                1 => DeciderKind::Collapsed,
+                other => anyhow::bail!(
+                    "unknown decider kind {other}: expected 0 (none) or 1 (collapsed)"
+                ),
+            };
+            let blob = inner_vk_from_verifier_key(&std::fs::read(verifier_key)?, kind)?;
+            std::fs::write(output, &blob)?;
         }
         Subcommands::Compile {
             ir_file,

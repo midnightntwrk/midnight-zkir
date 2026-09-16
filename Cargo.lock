@@ -257,7 +257,7 @@ dependencies = [
  "hex",
  "midnight-curves",
  "midnight-proofs",
- "num-bigint",
+ "num-bigint 0.4.8",
  "rand 0.8.7",
  "serde",
  "serde_json",
@@ -1701,7 +1701,7 @@ dependencies = [
  "lazy_static",
  "midnight-curves",
  "midnight-proofs",
- "num-bigint",
+ "num-bigint 0.4.8",
  "num-integer",
  "num-traits",
  "rand 0.8.7",
@@ -1730,7 +1730,7 @@ dependencies = [
  "hex",
  "k256",
  "lazy_static",
- "num-bigint",
+ "num-bigint 0.4.8",
  "p256",
  "pairing",
  "paste",
@@ -1755,7 +1755,7 @@ dependencies = [
  "group",
  "itertools",
  "midnight-curves",
- "num-bigint",
+ "num-bigint 0.4.8",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "rayon",
@@ -1881,7 +1881,7 @@ dependencies = [
  "midnight-circuits",
  "midnight-curves",
  "midnight-proofs",
- "num-bigint",
+ "num-bigint 0.4.8",
  "num-traits",
  "rand 0.8.7",
  "rayon",
@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-zkir"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "actix-rt",
  "anyhow",
@@ -1912,7 +1912,7 @@ dependencies = [
  "midnight-transient-crypto",
  "midnight-zk-stdlib",
  "midnight-zkir",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-traits",
  "pastey",
  "proptest",
@@ -2007,6 +2007,16 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rand 0.8.7",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
+dependencies = [
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -2904,7 +2914,7 @@ dependencies = [
  "ff",
  "midnight-curves",
  "midnight-proofs",
- "num-bigint",
+ "num-bigint 0.4.8",
  "rand 0.8.7",
 ]
 
@@ -3105,7 +3115,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

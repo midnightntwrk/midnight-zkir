@@ -26,7 +26,7 @@ use transient_crypto::{
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use zkir::ir_instructions::verify_proof::verify_proof_offcircuit;
+use zkir::ir_instructions::verify_proof::verify_inner_proof;
 
 struct JsKeyProvider(JsValue);
 
@@ -291,16 +291,8 @@ impl Zkir {
     }
 }
 
-/// Checks an inner proof off-circuit, short of the pairing it defers.
-///
-/// `plonk::prepare` replays the proof against the key and the instance, so
-/// garbled bytes, a wrong key and a mismatched instance all fail here rather
-/// than at proving time -- but whether a well-formed proof is *true* is decided
-/// by a pairing, and that needs SRS verifier parameters this module has no way
-/// to reach. A false proof therefore still gets as far as the ledger.
-///
-/// The guard is always true: a guarded-off `verifyProof` is a branch the
-/// generated TypeScript simply does not take.
+/// Wasm binding for [`verify_inner_proof`]: reads the instance as JS bigints
+/// and checks the proof, throwing on any failure.
 #[wasm_bindgen(js_name = "checkInnerProof")]
 pub fn check_inner_proof(
     vk_blob: Uint8Array,
@@ -317,7 +309,7 @@ pub fn check_inner_proof(
             fr_from_bigint(bi).map(|fr| fr.0)
         })
         .collect::<Result<Vec<_>, JsError>>()?;
-    verify_proof_offcircuit(&vk_blob.to_vec(), &instance, &proof.to_vec(), true)
+    verify_inner_proof(&vk_blob.to_vec(), &instance, &proof.to_vec())
         .map_err(|e| JsError::new(&e.to_string()))?;
     Ok(())
 }

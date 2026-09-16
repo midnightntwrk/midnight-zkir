@@ -38,11 +38,11 @@ export function provingProvider(kmProvider: KeyMaterialProvider): ProvingProvide
 export function jsonIrToBinary(json: String): Uint8Array;
 
 /**
- * Checks an inner proof against a key and instance, throwing if it is
- * malformed, keyed wrongly, or paired with the wrong instance.
+ * Verifies an inner proof against a key and instance, throwing if it is
+ * malformed, keyed wrongly, or does not hold for that instance.
  *
- * Stops short of the pairing that decides whether a well-formed proof is true,
- * so a false proof passes here and fails later at the ledger.
+ * Includes the pairing that decides whether a well-formed proof is true, so a
+ * false proof is rejected here rather than later at the ledger.
  */
 export function checkInnerProof(
     vkBlob: Uint8Array,

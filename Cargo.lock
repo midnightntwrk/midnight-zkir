@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-zkir"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "actix-rt",
  "anyhow",
@@ -1918,7 +1918,7 @@ dependencies = [
  "proptest",
  "proptest-derive",
  "rand 0.8.7",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.9.0",
  "serde",
  "serde_bytes",
  "serde_json",

@@ -5,6 +5,14 @@ Two examples: **cred_ledger** (`DeciderKind::None`) and **ivc_ledger**
 `zkir-v3/tests/assets/`, so the ledger-side test runs standalone. You only touch
 midnight-zk to regenerate them.
 
+**`external_artifacts.rs` is not in this repository.** The assets and this
+runbook were ported here, the test was not, so every command below names a
+crate (`midnight-zkir-v3`) and a test that do not exist here. What does run
+against these assets is `zkir/tests/inner_proof_artifacts.rs`, which verifies
+each inner proof off-circuit -- pairing included, but with no outer IR and no
+proving, so it covers neither the statement soundness nor the end-to-end
+accumulator discharge described below.
+
 ## Prerequisites
 
 - `cargo +1.95.0` in both repos.

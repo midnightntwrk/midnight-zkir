@@ -13,12 +13,12 @@
 
 //! `verify_inner_proof` against the real artifacts in `tests/assets/`.
 //!
-//! `external_artifacts.md` describes where those come from and what a full
-//! end-to-end run proves. This is the cheap half of it: no proving and no outer
-//! circuit, just the off-circuit verification of two inner proofs that are
-//! already checked in. They were made against the Midnight SRS, which is the
-//! one `verify_inner_proof` pairs against, so they are the only proofs in this
-//! repository it can accept -- `verify_proof_e2e.rs` generates its own setup.
+//! `external_artifacts.md` describes where those come from and what the
+//! end-to-end run it documents proves. That test is not in this repository;
+//! this is only the half of it that needs no outer IR and no proving. The
+//! artifacts were made against the Midnight SRS, which is the one
+//! `verify_inner_proof` pairs against, so they are the only proofs here it can
+//! accept -- `verify_proof_e2e.rs` generates a setup of its own.
 
 use std::fs;
 use std::path::PathBuf;

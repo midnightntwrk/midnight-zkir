@@ -457,6 +457,7 @@ mod proof_tests {
 
         let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
         let preimage = ProofPreimage {
+            inner_proofs: vec![],
             binding_input: 42.into(),
             communications_commitment: None,
             inputs: vec![12345.into(), 6789.into()],

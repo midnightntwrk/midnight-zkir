@@ -80,7 +80,9 @@ pub struct Preprocessed {
     pub binding_input: outer::Scalar,
     pub comm_comm: Option<(outer::Scalar, outer::Scalar)>,
     /// The inner-proof witnesses each `InnerProof` bound, one per instruction in
-    /// instruction order; the empty blob for a guarded-off one.
+    /// instruction order; the empty blob for a guarded-off one. `ProofPreimage`'s
+    /// same-named vector holds only the ones actually consumed, so the two differ
+    /// in length whenever a guard is off.
     pub inner_proofs: Vec<Vec<u8>>,
 }
 
@@ -919,20 +921,19 @@ impl IrSource {
                     }
                 }
                 I::InnerProof { guard, output } => {
-                    // One witness per instruction, whatever the guard, so both
-                    // passes index them the same way.
-                    let InnerProofWitness::Direct(bytes) =
-                        preimage.inner_proofs.get(inner_proofs_idx).ok_or_else(|| {
-                            anyhow!(
-                                "Not enough proof witnesses: ran out at index {}",
-                                inner_proofs_idx
-                            )
-                        })?;
-                    inner_proofs_idx += 1;
-
-                    // Guarded off, the witness is ignored: the `VerifyProof`
-                    // under the same guard discards the accumulator it produces.
+                    // Guarded off, consume nothing: the `VerifyProof` under the
+                    // same guard returns the trivial accumulator without reading
+                    // the blob. The push below stays outside the guard, so the
+                    // in-circuit pass still sees one slot per instruction.
                     let proof = if resolve_operand_bool(&memory, guard)? {
+                        let InnerProofWitness::Direct(bytes) =
+                            preimage.inner_proofs.get(inner_proofs_idx).ok_or_else(|| {
+                                anyhow!(
+                                    "Not enough proof witnesses: ran out at index {}",
+                                    inner_proofs_idx
+                                )
+                            })?;
+                        inner_proofs_idx += 1;
                         bytes.clone()
                     } else {
                         Vec::new()
@@ -959,7 +960,7 @@ impl IrSource {
         }
         if preimage.inner_proofs.len() != inner_proofs_idx {
             bail!(
-                "Expected {} proof witnesses (one per InnerProof), received {}",
+                "Expected {} proof witnesses (one per active InnerProof), received {}",
                 inner_proofs_idx,
                 preimage.inner_proofs.len()
             );
@@ -1667,12 +1668,10 @@ impl Relation for IrSource {
                         &guard,
                     )?;
                 }
-                // The guard is off-circuit bookkeeping only: `preprocess` already
+                // The guard is off-circuit bookkeeping only: `preprocess`
                 // resolved it, binding the empty blob where it was off, and
-                // recorded one witness per instruction for us to index.
-                // Both passes walk one slot per instruction, so this index
-                // advances with the instruction list exactly as the off-circuit
-                // one does.
+                // recorded one witness per instruction -- so this index advances
+                // with the instruction list, whatever the guards were.
                 I::InnerProof { guard: _, output } => {
                     let idx = inner_proof_idx;
                     inner_proof_idx += 1;

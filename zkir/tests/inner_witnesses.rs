@@ -11,10 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `inner_proof` consumes one entry of `ProofPreimage::inner_proofs` per
-//! instruction, whatever its guard, so the vector's length is fixed by the
-//! circuit and not by the path taken. Its pairing with `verify_proof` is
-//! checked before either pass runs.
+//! `inner_proof` consumes one entry of `ProofPreimage::inner_proofs` only where
+//! its guard is on, so a caller never pads for a branch it did not take. Its
+//! pairing with `verify_proof` is checked before either pass runs.
 //!
 //! Every guard here is a constant `0x00`, which is what keeps these tests fast:
 //! a guarded-off `verify_proof` returns the trivial accumulator without reading
@@ -94,19 +93,19 @@ fn load(instructions: Vec<String>) -> IrSource {
 }
 
 #[test]
-fn one_proof_witness_per_instruction_whatever_the_guard() {
+fn an_inner_proof_consumes_only_when_its_guard_is_on() {
     let ir = load([pair("%p_0"), pair("%p_1")].concat());
 
-    // Neither proof is verified, yet both slots must still be supplied: the
-    // count follows the instruction list, not the guards.
-    ir.check(&preimage(vec![blank(), blank()]))
-        .expect("two instructions, two witnesses");
+    // Neither proof is verified, so neither slot is owed.
+    ir.check(&preimage(vec![]))
+        .expect("two guarded-off instructions, no witnesses");
 
-    assert!(ir.check(&preimage(vec![blank()])).is_err(), "too few");
+    // An unconsumed witness is rejected, so the vector cannot quietly carry a
+    // proof for a branch that was not taken.
+    assert!(ir.check(&preimage(vec![blank()])).is_err(), "one unconsumed");
     assert!(
-        ir.check(&preimage(vec![blank(), blank(), blank()]))
-            .is_err(),
-        "too many"
+        ir.check(&preimage(vec![blank(), blank()])).is_err(),
+        "two unconsumed"
     );
 }
 

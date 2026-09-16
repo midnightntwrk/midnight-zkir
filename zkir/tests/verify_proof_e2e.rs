@@ -312,13 +312,13 @@ fn preimage(guard: bool, proof: &[u8], instance: &[Fq]) -> ProofPreimage {
         },
         public_transcript_inputs: vec![],
         public_transcript_outputs: vec![],
-        // One slot for the circuit's single `inner_proof`, whatever the guard;
-        // blank where it is off.
-        inner_proofs: vec![InnerProofWitness::Direct(if guard {
-            proof.to_vec()
+        // A slot for the circuit's single `inner_proof` only where the guard
+        // is on; guarded off it consumes nothing.
+        inner_proofs: if guard {
+            vec![InnerProofWitness::Direct(proof.to_vec())]
         } else {
             vec![]
-        })],
+        },
         key_location: KeyLocation(Cow::Borrowed("builtin")),
     }
 }

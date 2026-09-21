@@ -99,9 +99,6 @@ jobs:
       - name: Build zkir
         run: nix build .#zkir
 
-      - name: Build test artifacts
-        run: nix build .#test-artifacts
-
   build-and-test:
     strategy:
       matrix:

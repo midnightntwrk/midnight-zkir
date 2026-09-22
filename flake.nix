@@ -151,47 +151,6 @@
             extraBuildInputs = [packages.public-params];
           };
 
-          packages.test-artifacts = pkgs.stdenvNoCC.mkDerivation {
-            pname = "midnight-zkir-test-artifacts";
-            version = zkir-version;
-            src = inclusive.lib.inclusive ./zkir-precompiles [./zkir-precompiles];
-            MIDNIGHT_PP = "${packages.public-params}";
-            nativeBuildInputs = [
-              pkgs.jq
-              packages.public-params
-              packages.zkir
-            ];
-            buildPhase = ''
-              for contract in *; do
-                mv "$contract" "$contract-tmp"
-                mkdir -p "$contract/keys"
-                mv $contract-tmp "$contract/zkir"
-                VERSION=$(jq -s '.[0].version.major' $contract/zkir/*.zkir)
-                if [[ "$VERSION" == "3" ]]; then
-                  ${packages.zkir}/bin/zkir compile-many "$contract/zkir" "$contract/keys"
-                elif [[ "$VERSION" == "2" ]]; then
-                  # The v2 toolchain was removed in the crate consolidation, so
-                  # v2 fixtures ship with an empty keys/ directory; only their
-                  # zkir sources and precomputed hashes remain usable.
-                  :
-                else
-                  # Without this the loop would fall through, leaving an empty
-                  # keys/ directory and still exiting 0, so a contract whose
-                  # version no zkir here can compile would silently vanish from
-                  # MIDNIGHT_LEDGER_TEST_STATIC_DIR instead of failing the build.
-                  echo "error: contract '$contract' declares unsupported zkir major version '$VERSION'" >&2
-                  exit 1
-                fi
-              done
-            '';
-            installPhase = ''
-              mkdir $out
-              for contract in *; do
-                cp -a "$contract" "$out/$contract"
-              done
-            '';
-          };
-
           packages.public-params = let
               param-for = k: "https://midnight-s3-fileshare-dev-eu-west-1.s3.eu-west-1.amazonaws.com/bls_midnight_2p${builtins.toString k}";
           in pkgs.stdenvNoCC.mkDerivation {
@@ -253,7 +212,6 @@
             hardeningDisable = ["zerocallusedregs" "stackprotector"];
 
             MIDNIGHT_PP = "${packages.public-params}";
-            MIDNIGHT_LEDGER_TEST_STATIC_DIR = "${packages.test-artifacts}";
           };
         }
     );

@@ -118,8 +118,6 @@ pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, an
 /// field order.
 ///
 /// Also supported for the point types, as the inverse of the compressed
-/// encoding. The decoded point is witnessed and encoded again, and the result
-/// is asserted equal to `bytes`, so the circuit is unsatisfiable on an invalid
 /// encoding.
 ///
 /// # Errors
@@ -245,7 +243,7 @@ pub fn from_bytes_incircuit(
 }
 
 // Computes a non-assigned Value<P> out of the inputed `bytes`. On an 
-// invalid encoding, the generator is computed instead of panicking.
+// invalid encoding, the generator is returned instead of panicking.
 fn decode_assigned_bytes<P: Group>(
     bytes: &[AssignedByte<F>],
     decode: impl Fn(&[u8]) -> Option<P>,

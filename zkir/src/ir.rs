@@ -603,6 +603,7 @@ pub enum Instruction {
     ///
     /// Supported on the prime-field types:
     /// * Native
+    /// * JubjubScalar
     /// * Secp256k1Base
     /// * Secp256k1Scalar
     /// * Secp256r1Base
@@ -626,6 +627,7 @@ pub enum Instruction {
     ///
     /// Supported on the prime-field types:
     /// * Native
+    /// * JubjubScalar
     /// * Secp256k1Base
     /// * Secp256k1Scalar
     /// * Secp256r1Base
@@ -1101,6 +1103,7 @@ pub enum Instruction {
     ///
     /// Supported on the prime-field types:
     /// * Native
+    /// * JubjubScalar
     /// * Secp256k1Base
     /// * Secp256k1Scalar
     /// * Secp256r1Base
@@ -1122,6 +1125,7 @@ pub enum Instruction {
     ///
     /// Supported on the prime-field types:
     /// * Native
+    /// * JubjubScalar
     /// * Secp256k1Base
     /// * Secp256k1Scalar
     /// * Secp256r1Base

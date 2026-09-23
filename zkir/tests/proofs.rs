@@ -18,7 +18,7 @@ mod common;
 mod proof_tests {
     use super::common::{TestParams, TestResolver};
     use group::{Group, ff::Field};
-    use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, JubjubSubgroup, curve25519, k256, p256};
     use midnight_zkir::{
         Identifier, IrSource, Preprocessed, ir_instructions::encode::encode_offcircuit,
         ir_types::IrValue,
@@ -454,6 +454,105 @@ mod proof_tests {
             communications_commitment: None,
             inputs: vec![12345.into(), 6789.into()],
             private_transcript: vec![],
+            public_transcript_inputs: vec![],
+            public_transcript_outputs: vec![],
+            key_location: KeyLocation(Cow::Borrowed("builtin")),
+        };
+        let (proof, _) = preimage
+            .prove::<IrSource>(
+                &mut ChaCha20Rng::from_seed([42; 32]),
+                &TestParams,
+                &TestResolver {
+                    pk: pk.clone(),
+                    vk: vk.clone(),
+                    ir: ir.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
+            .unwrap();
+    }
+
+    /// Exercises `to_bytes` / `from_bytes` on `Scalar<Jubjub>`. Unlike the
+    /// other field types, a Jubjub scalar is held in-circuit as a bit vector
+    /// that is not constrained to be canonical, so both directions go through
+    /// an explicit reduction modulo the group order.
+    ///
+    /// The circuit round-trips a scalar through both instructions, pins the
+    /// byte encodings of a witnessed scalar and of a small constant against the
+    /// off-circuit reference, and reduces an all-`0xff` byte string, which
+    /// exceeds the group order.
+    #[actix_rt::test]
+    async fn test_jubjub_scalar_bytes_proof() {
+        use midnight_zkir::ir_instructions::from_bytes::from_bytes_offcircuit;
+        use midnight_zkir::ir_instructions::to_bytes::to_bytes_offcircuit;
+        use midnight_zkir::ir_types::IrType;
+
+        let ir_raw = r#"{
+           "version": { "major": 3, "minor": 0 },
+           "inputs": [
+              { "name": "%s",   "type": "Scalar<Jubjub>" },
+              { "name": "%raw", "type": "Bytes<32>"      }
+           ],
+           "outputs": [],
+           "do_communications_commitment": false,
+           "instructions": [
+               { "op": "to_bytes", "input": "%s", "output": "%s_bytes" },
+               { "op": "from_bytes", "bytes": "%s_bytes", "type": "Scalar<Jubjub>", "output": "%s_back" },
+               { "op": "constrain_eq", "a": "%s_back", "b": "%s" },
+
+               { "op": "private_input", "type": "Bytes<32>", "guard": null, "output": "%s_bytes_exp" },
+               { "op": "constrain_eq", "a": "%s_bytes", "b": "%s_bytes_exp" },
+
+               { "op": "from_bytes", "bytes": "%raw", "type": "Scalar<Jubjub>", "output": "%raw_scalar" },
+               { "op": "private_input", "type": "Scalar<Jubjub>", "guard": null, "output": "%raw_scalar_exp" },
+               { "op": "constrain_eq", "a": "%raw_scalar", "b": "%raw_scalar_exp" },
+
+               { "op": "load_constant", "type": "Scalar<Jubjub>", "encoding": ["0x07"], "output": "%c" },
+               { "op": "to_bytes", "input": "%c", "output": "%c_bytes" },
+               { "op": "private_input", "type": "Bytes<32>", "guard": null, "output": "%c_bytes_exp" },
+               { "op": "constrain_eq", "a": "%c_bytes", "b": "%c_bytes_exp" }
+           ]
+        }"#;
+        let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
+
+        let scalar_val = JubjubFr::random(OsRng);
+        let raw_bytes = [0xffu8; 32];
+
+        let encode = |v: IrValue| -> Vec<transient_crypto::curve::Fr> {
+            encode_offcircuit(&v)
+                .into_iter()
+                .map(|x| x.try_into().unwrap())
+                .collect()
+        };
+
+        let inputs: Vec<transient_crypto::curve::Fr> = [
+            encode(IrValue::JubjubScalar(scalar_val)),
+            encode(IrValue::Bytes(raw_bytes.to_vec())),
+        ]
+        .concat();
+
+        let scalar_bytes_exp = to_bytes_offcircuit(&IrValue::JubjubScalar(scalar_val)).unwrap();
+        let raw_scalar_exp = from_bytes_offcircuit(&IrType::JubjubScalar, &raw_bytes).unwrap();
+        // A small constant is assigned from a short bit vector, so its byte
+        // encoding exercises the zero-padding path of `to_bytes`.
+        let const_bytes_exp =
+            to_bytes_offcircuit(&IrValue::JubjubScalar(JubjubFr::from(7))).unwrap();
+
+        let private_transcript: Vec<transient_crypto::curve::Fr> = [
+            encode(scalar_bytes_exp),
+            encode(raw_scalar_exp),
+            encode(const_bytes_exp),
+        ]
+        .concat();
+
+        let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
+        let preimage = ProofPreimage {
+            binding_input: 42.into(),
+            communications_commitment: None,
+            inputs,
+            private_transcript,
             public_transcript_inputs: vec![],
             public_transcript_outputs: vec![],
             key_location: KeyLocation(Cow::Borrowed("builtin")),

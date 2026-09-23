@@ -20,7 +20,11 @@ use midnight_circuits::{
     },
     types::{AssignedByte, InnerValue},
 };
-use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
+use midnight_curves::{
+    JubjubSubgroup,
+    curve25519::{self, Curve25519Subgroup},
+    k256, p256,
+};
 use midnight_proofs::{
     circuit::{Layouter, Value},
     plonk,
@@ -34,13 +38,14 @@ use crate::{
     ir_instructions::{
         F,
         encode::jubjub_scalar_from_biguint,
-        to_bytes::{jubjub_compress_incircuit, sec1_compress_incircuit},
+        to_bytes::{jubjub_compress_incircuit, sec1_compress_incircuit, to_bytes_offcircuit},
     },
     ir_types::{CircuitValue, IrType, IrValue},
 };
 
-/// Builds (off-circuit) a value of the given type from a byte string of any
-/// length. Supported for the prime-field types:
+/// Builds (off-circuit) a value of the given type from a byte string.
+///
+/// Supported for the prime-field types:
 ///  - Native
 ///  - JubjubScalar
 ///  - Secp256k1Base
@@ -50,23 +55,26 @@ use crate::{
 ///  - Curve25519Base
 ///  - Curve25519Scalar
 ///
-/// The bytes are interpreted as a little-endian integer and reduced modulo the
-/// field order.
+/// The bytes may have any length. They are interpreted as a little-endian
+/// integer and reduced modulo the field order, so non-canonical encodings
+/// are accepted.
 ///
-/// Also supported for the point types, as the inverse of the compressed
-/// encoding of [`to_bytes_offcircuit`](super::to_bytes::to_bytes_offcircuit).
-/// The bytes must then have exactly the length of that encoding.
+///
+/// Supported for the point types, as the inverse of the compressed encoding
+/// of [`to_bytes_offcircuit`]. Unlike field elements, non-canonical encodings
+/// of points are rejected, not reduced: the bytes must be exactly the
+/// encoding of a point of that type.
 ///
 /// # Errors
 ///
-/// Errors if the input is not a supported type, or if the bytes are not a
-/// valid encoding of a point of that type.
+/// Errors if the input is not a supported type, or if the bytes are not the
+/// canonical encoding of a point of that type.
 pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, anyhow::Error> {
     // The deprecated `FromBytes32` instruction should only work for the output
     // types listed in `ir.rs`.
     use IrValue::*;
 
-    match val_t {
+    let decoded = match val_t {
         IrType::Native => Ok(Native(Fr(from_le_bytes_with_reduction(bytes)))),
 
         IrType::JubjubScalar => Ok(JubjubScalar(from_le_bytes_with_reduction(bytes))),
@@ -83,28 +91,57 @@ pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, an
 
         IrType::Curve25519Scalar => Ok(Curve25519Scalar(from_le_bytes_with_reduction(bytes))),
 
-        IrType::Curve25519Point => decode_curve25519(bytes)
-            .map(Curve25519Point)
-            .ok_or_else(|| anyhow::anyhow!("Invalid {val_t:?} encoding")),
-
-        IrType::JubjubPoint => decode_jubjub(bytes)
+        IrType::JubjubPoint => <&[u8; 32]>::try_from(bytes)
+            .ok()
+            .and_then(|b| Option::from(JubjubSubgroup::from_bytes(b)))
             .map(JubjubPoint)
             .ok_or_else(|| anyhow::anyhow!("Invalid {val_t:?} encoding")),
 
-        IrType::Secp256k1Point => decode_secp256k1(bytes)
+        IrType::Secp256k1Point => <[u8; 33]>::try_from(bytes)
+            .ok()
+            .and_then(|b| Option::from(k256::K256::from_bytes(&b.into())))
             .map(Secp256k1Point)
             .ok_or_else(|| anyhow::anyhow!("Invalid {val_t:?} encoding")),
 
-        IrType::Secp256r1Point => decode_secp256r1(bytes)
+        IrType::Secp256r1Point => <[u8; 33]>::try_from(bytes)
+            .ok()
+            .and_then(|b| Option::from(p256::P256::from_bytes(&b.into())))
             .map(Secp256r1Point)
             .ok_or_else(|| anyhow::anyhow!("Invalid {val_t:?} encoding")),
 
+        IrType::Curve25519Point => <&[u8; 32]>::try_from(bytes)
+            .ok()
+            .and_then(|b| Option::from(curve25519::Curve25519::from_bytes(b)))
+            .and_then(|p: curve25519::Curve25519| Curve25519Subgroup::from_edwards(p.0))
+            .map(Curve25519Point)
+            .ok_or_else(|| anyhow::anyhow!("Invalid {val_t:?} encoding")),
+
         _ => Err(anyhow::anyhow!("Unsupported from_bytes for type {val_t:?}",)),
+    }?;
+
+    // Field elements are reduced from bytes of any length, but points must be
+    // given in canonical form.
+    if matches!(
+        val_t,
+        IrType::JubjubPoint
+            | IrType::Secp256k1Point
+            | IrType::Secp256r1Point
+            | IrType::Curve25519Point
+    ) {
+        let re_encoded: Vec<u8> = to_bytes_offcircuit(&decoded)?.try_into()?;
+        if re_encoded != bytes {
+            return Err(anyhow::anyhow!(
+                "The bytes of type {val_t:?} are not in canonical form: {bytes:?}"
+            ));
+        }
     }
+
+    Ok(decoded)
 }
 
-/// Builds (in-circuit) a value of the given type from a byte string of any
-/// length. Supported for the prime-field types:
+/// Builds (in-circuit) a value of the given type from a byte string.
+///
+/// Supported for the prime-field types:
 ///  - Native
 ///  - JubjubScalar
 ///  - Secp256k1Base
@@ -114,16 +151,24 @@ pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, an
 ///  - Curve25519Base
 ///  - Curve25519Scalar
 ///
-/// The bytes are interpreted as a little-endian integer and reduced modulo the
-/// field order.
+/// The bytes may have any length. They are interpreted as a little-endian
+/// integer and reduced modulo the field order, so non-canonical encodings
+/// (integers not below the field order) are accepted.
 ///
-/// Also supported for the point types, as the inverse of the compressed
-/// encoding.
+/// Supported for the point types, as the inverse of the compressed encoding
+/// of [`to_bytes_incircuit`](super::to_bytes::to_bytes_incircuit). Unlike
+/// field elements, non-canonical encodings of points are rejected, not
+/// reduced: the decoded point is witnessed, encoded again, and the result is
+/// asserted equal to `bytes`.
 ///
 /// # Errors
 ///
 /// Errors if the input is not a supported type, or if the length of `bytes`
 /// does not match the point type.
+///
+/// # Unsatisfiable Circuit
+///
+/// If `bytes` are not the canonical encoding of a point of the given type.
 pub fn from_bytes_incircuit(
     std_lib: &ZkStdLib,
     layouter: &mut impl Layouter<F>,
@@ -133,6 +178,10 @@ pub fn from_bytes_incircuit(
     // The deprecated `FromBytes32` instruction should only work for the output
     // types listed in `ir.rs`.
     use CircuitValue::*;
+
+    // On an invalid encoding, the decoded (witnessed) point defaults to the
+    // generator instead of panicking; the circuit is then unsatisfiable.
+    let values: Value<Vec<u8>> = bytes.iter().map(|b| b.value()).collect();
 
     match val_t {
         IrType::Native => std_lib.assigned_from_le_bytes(layouter, bytes).map(Native),
@@ -178,24 +227,16 @@ pub fn from_bytes_incircuit(
             .assigned_from_le_bytes(layouter, bytes)
             .map(Curve25519Scalar),
 
-        IrType::Curve25519Point => {
-            let bytes: &[AssignedByte<F>; 32] = bytes.try_into().map_err(|_| {
-                plonk::Error::Synthesis(format!(
-                    "from_bytes of {val_t:?} expects Bytes<32>, got Bytes<{}>",
-                    bytes.len()
-                ))
-            })?;
-            let value = decode_assigned_bytes(bytes, decode_curve25519);
-            std_lib
-                .curve25519()
-                .from_canonical_compressed_bytes(layouter, bytes, value)
-                .map(Curve25519Point)
-        }
-
         IrType::JubjubPoint => {
+            let value = values.map(|v| {
+                <&[u8; 32]>::try_from(v.as_slice())
+                    .ok()
+                    .and_then(|b| Option::from(JubjubSubgroup::from_bytes(b)))
+                    .unwrap_or(JubjubSubgroup::generator())
+            });
             let curve = std_lib.jubjub();
             // `assign` constrains the point to the prime-order subgroup.
-            let p = curve.assign(layouter, decode_assigned_bytes(bytes, decode_jubjub))?;
+            let p = curve.assign(layouter, value)?;
             let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
             let encoding = jubjub_compress_incircuit(std_lib, layouter, &x, &y)?;
             assert_bytes_equal(std_lib, layouter, bytes, &encoding)?;
@@ -203,8 +244,14 @@ pub fn from_bytes_incircuit(
         }
 
         IrType::Secp256k1Point => {
+            let value = values.map(|v| {
+                <[u8; 33]>::try_from(v.as_slice())
+                    .ok()
+                    .and_then(|b| Option::from(k256::K256::from_bytes(&b.into())))
+                    .unwrap_or(k256::K256::generator())
+            });
             let curve = std_lib.secp256k1();
-            let p = curve.assign(layouter, decode_assigned_bytes(bytes, decode_secp256k1))?;
+            let p = curve.assign(layouter, value)?;
             let is_id = curve.is_zero(layouter, &p)?;
             let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
             let encoding = sec1_compress_incircuit(
@@ -220,8 +267,14 @@ pub fn from_bytes_incircuit(
         }
 
         IrType::Secp256r1Point => {
+            let value = values.map(|v| {
+                <[u8; 33]>::try_from(v.as_slice())
+                    .ok()
+                    .and_then(|b| Option::from(p256::P256::from_bytes(&b.into())))
+                    .unwrap_or(p256::P256::generator())
+            });
             let curve = std_lib.p256();
-            let p = curve.assign(layouter, decode_assigned_bytes(bytes, decode_secp256r1))?;
+            let p = curve.assign(layouter, value)?;
             let is_id = curve.is_zero(layouter, &p)?;
             let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
             let encoding = sec1_compress_incircuit(
@@ -236,20 +289,30 @@ pub fn from_bytes_incircuit(
             Ok(Secp256r1Point(p))
         }
 
+        IrType::Curve25519Point => {
+            let bytes: &[AssignedByte<F>; 32] = bytes.try_into().map_err(|_| {
+                plonk::Error::Synthesis(format!(
+                    "from_bytes of {val_t:?} expects Bytes<32>, got Bytes<{}>",
+                    bytes.len()
+                ))
+            })?;
+            let value = values.map(|v| {
+                <&[u8; 32]>::try_from(v.as_slice())
+                    .ok()
+                    .and_then(|b| Option::from(curve25519::Curve25519::from_bytes(b)))
+                    .and_then(|p: curve25519::Curve25519| Curve25519Subgroup::from_edwards(p.0))
+                    .unwrap_or(Curve25519Subgroup::generator())
+            });
+            std_lib
+                .curve25519()
+                .from_canonical_compressed_bytes(layouter, bytes, value)
+                .map(Curve25519Point)
+        }
+
         _ => Err(plonk::Error::Synthesis(format!(
             "Unsupported from_bytes for {val_t:?}",
         ))),
     }
-}
-
-// Computes a non-assigned Value<P> out of the inputed `bytes`. On an 
-// invalid encoding, the generator is returned instead of panicking.
-fn decode_assigned_bytes<P: Group>(
-    bytes: &[AssignedByte<F>],
-    decode: impl Fn(&[u8]) -> Option<P>,
-) -> Value<P> {
-    let values: Value<Vec<u8>> = bytes.iter().map(|b| b.value()).collect();
-    values.map(|v| decode(&v).unwrap_or(P::generator()))
 }
 
 // Asserts that `a` and `b` are equal, erroring if their lengths differ.
@@ -271,26 +334,6 @@ fn assert_bytes_equal(
         .try_for_each(|(a, b)| std_lib.assert_equal(layouter, a, b))
 }
 
-fn decode_curve25519(bytes: &[u8]) -> Option<curve25519::Curve25519Subgroup> {
-    let p: curve25519::Curve25519 =
-        Option::from(curve25519::Curve25519::from_bytes(bytes.try_into().ok()?))?;
-    curve25519::Curve25519Subgroup::from_edwards(p.0)
-}
-
-fn decode_jubjub(bytes: &[u8]) -> Option<JubjubSubgroup> {
-    Option::from(JubjubSubgroup::from_bytes(bytes.try_into().ok()?))
-}
-
-fn decode_secp256k1(bytes: &[u8]) -> Option<k256::K256> {
-    let bytes: [u8; 33] = bytes.try_into().ok()?;
-    Option::from(k256::K256::from_bytes(&bytes.into()))
-}
-
-fn decode_secp256r1(bytes: &[u8]) -> Option<p256::P256> {
-    let bytes: [u8; 33] = bytes.try_into().ok()?;
-    Option::from(p256::P256::from_bytes(&bytes.into()))
-}
-
 /// Builds a prime field element from the given bytes by interpreting them
 /// in little-endian as an integer. The integer can be bigger than field order.
 pub(crate) fn from_le_bytes_with_reduction<F: CircuitField>(bytes: &[u8]) -> F {
@@ -308,7 +351,6 @@ mod tests {
     use transient_crypto::curve::Fr;
 
     use super::*;
-    use crate::ir_instructions::to_bytes::to_bytes_offcircuit;
 
     // Starts from a random value, converts it into bytes (so as to obtain a
     // valid, canonical byte representation), then goes from those bytes
@@ -422,7 +464,6 @@ mod tests {
     // Non-field, non-point types are rejected.
     #[test]
     fn test_from_bytes_rejects_unsupported_types() {
-        assert!(from_bytes_offcircuit(&IrType::JubjubScalar, &[0u8; 32]).is_err());
         assert!(from_bytes_offcircuit(&IrType::Bytes(32), &[0u8; 32]).is_err());
         assert!(from_bytes_offcircuit(&IrType::Bool, &[0u8; 32]).is_err());
     }
@@ -449,5 +490,11 @@ mod tests {
         // subgroup.
         let minus_one: Vec<u8> = (-midnight_curves::Fq::ONE).to_bytes_le().to_vec();
         assert!(from_bytes_offcircuit(&IrType::JubjubPoint, &minus_one).is_err());
+        // Non-canonical `y = p + 1` (for p = 2^255 - 19), which decompresses to
+        // the Curve25519 identity.
+        let mut p_plus_one = [0xffu8; 32];
+        p_plus_one[0] = 0xee;
+        p_plus_one[31] = 0x7f;
+        assert!(from_bytes_offcircuit(&IrType::Curve25519Point, &p_plus_one).is_err());
     }
 }

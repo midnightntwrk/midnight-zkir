@@ -46,12 +46,12 @@ use crate::{
 /// `to_bytes . from_bytes` is the identity up to zero-padding to 32 bytes.
 ///
 /// Points are encoded in compressed form:
-///  - `Curve25519Point` -> `Bytes(32)`, ed25519 (RFC 8032) encoding
-///  - `JubjubPoint` -> `Bytes(32)`, same layout as `Curve25519Point`: the
-///    little-endian `y` coordinate, with the least significant bit of `x` in
-///    the most significant bit of the last byte
+///  - `JubjubPoint` -> `Bytes(32)`, the little-endian `y` coordinate, 
+///    with the least significant bit of `x` in the most significant bit 
+///    of the last byte
 ///  - `Secp256k1Point`, `Secp256r1Point` -> `Bytes(33)`, SEC1 compressed
 ///    encoding, with the identity encoded as 33 zero bytes
+///  - `Curve25519Point` -> `Bytes(32)`, ed25519 (RFC 8032) encoding
 ///
 /// # Errors
 ///
@@ -215,7 +215,7 @@ pub(crate) fn jubjub_compress_incircuit(
 ) -> Result<Vec<AssignedByte<F>>, plonk::Error> {
     // Decomposition into 32 (LE) bytes enforces canonicity.
     let mut y_bytes = std_lib.assigned_to_le_bytes(layouter, y, Some(32))?;
-    let x_bits = std_lib.assigned_to_le_bits(layouter, x, None, true)?;
+    let x_sign = std_lib.sgn0(layouter, x)?;
 
     // y < 2^255, so the most significant byte of y is at most 127 and adding
     // 128 causes no overflow.
@@ -223,7 +223,7 @@ pub(crate) fn jubjub_compress_incircuit(
         layouter,
         &[
             (F::from(1), y_bytes[31].clone().into()),
-            (F::from(128), x_bits[0].clone().into()),
+            (F::from(128), x_sign.into()),
         ],
         F::from(0),
     )?;
@@ -251,11 +251,11 @@ where
 {
     let mut x_bytes = base_field_chip.assigned_to_le_bytes(layouter, x, Some(32))?;
     x_bytes.reverse();
-    let y_bits = base_field_chip.assigned_to_le_bits(layouter, y, None, true)?;
+    let y_sign = base_field_chip.sgn0(layouter, y)?;
 
     let prefix = std_lib.linear_combination(
         layouter,
-        &[(F::from(1), y_bits[0].clone().into())],
+        &[(F::from(1), y_sign.into())],
         F::from(2),
     )?;
     let prefix: AssignedByte<F> = std_lib.convert(layouter, &prefix)?;

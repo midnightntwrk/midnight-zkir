@@ -1151,10 +1151,13 @@ pub enum Instruction {
     /// For inputs representing an integer below the field order, `ToBytes`
     /// inverts `FromBytes` up to zero-padding to 32 bytes.
     ///
+    /// Non-canonical field elements (integers not below the field order) are
+    /// therefore accepted and reduced.
+    ///
     /// Also supported on the point types listed in `ToBytes`, as its inverse.
-    /// The input must then have exactly the length of the compressed
-    /// encoding, and this instruction fails off-circuit, and is unsatisfiable
-    /// in-circuit, on an invalid encoding.
+    /// Unlike field elements, non-canonical encodings of points are rejected:
+    /// this instruction fails off-circuit, and is unsatisfiable in-circuit,
+    /// unless the input is exactly the compressed encoding of a point.
     FromBytes {
         /// The input bytes
         bytes: Operand,

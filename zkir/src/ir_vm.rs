@@ -33,7 +33,7 @@ use crate::ir_instructions::mul::{mul_incircuit, mul_offcircuit};
 use crate::ir_instructions::neg::{neg_incircuit, neg_offcircuit};
 use crate::ir_instructions::select::{select_incircuit, select_offcircuit};
 use crate::ir_instructions::to_bytes::{to_bytes_incircuit, to_bytes_offcircuit};
-use crate::ir_types::{CircuitValue, IrType, IrValue, MAX_BYTES_LEN};
+use crate::ir_types::{BYTES_PER_FIELD_ELEMENT, CircuitValue, IrType, IrValue, MAX_BYTES_LEN};
 
 use super::ir::{Identifier, Instruction as I, IrSource, Operand};
 use anyhow::{anyhow, bail};
@@ -99,6 +99,26 @@ fn circuit_value_to_bytes32(
     bytes
         .try_into()
         .map_err(|_| Error::Synthesis(format!("expected a Bytes<32> value, got Bytes<{len}>")))
+}
+
+/// Validates the operand count of a `BytesFromNatives` instruction producing a
+/// `Bytes(len)` value, returning the number of limbs it unpacks from,
+/// `ceil(len / 31)`. Shared by the off-circuit and in-circuit runs, which wrap
+/// the message in their own error type.
+fn bytes_from_natives_nb_limbs(len: u32, nb_inputs: usize) -> Result<usize, String> {
+    if len == 0 || len > MAX_BYTES_LEN {
+        return Err(format!(
+            "BytesFromNatives: output length {len} is not in 1..={MAX_BYTES_LEN}"
+        ));
+    }
+    let nb_limbs = (len as usize).div_ceil(BYTES_PER_FIELD_ELEMENT);
+    if nb_inputs != nb_limbs {
+        return Err(format!(
+            "BytesFromNatives: a Bytes<{len}> unpacks from {nb_limbs} field elements but the \
+             instruction has {nb_inputs} inputs"
+        ));
+    }
+    Ok(nb_limbs)
 }
 
 fn fab_decode_to_bytes(
@@ -702,6 +722,49 @@ impl IrSource {
                             anyhow!("slice out of bounds: {s}..{s}+{l} into Bytes<{}>", bs.len())
                         })?;
                     memory.insert(output.clone(), IrValue::Bytes(bs[s..end].to_vec()));
+                }
+                I::BytesIntoNatives { bytes, outputs } => {
+                    let value = resolve_operand(&memory, bytes)?;
+                    if !matches!(value, IrValue::Bytes(_)) {
+                        bail!(
+                            "BytesIntoNatives expects a Bytes input, found {:?}",
+                            value.get_type()
+                        );
+                    }
+                    let encoded = encode_offcircuit(&value);
+                    if encoded.len() != outputs.len() {
+                        bail!(
+                            "BytesIntoNatives: {:?} packs into {} field elements but the instruction has {} outputs",
+                            value.get_type(),
+                            encoded.len(),
+                            outputs.len()
+                        );
+                    }
+                    for (out_id, enc_val) in outputs.iter().zip(encoded) {
+                        memory.insert(out_id.clone(), enc_val);
+                    }
+                }
+                I::BytesFromNatives {
+                    inputs,
+                    len,
+                    output,
+                } => {
+                    let nb_limbs = bytes_from_natives_nb_limbs(*len, inputs.len())
+                        .map_err(anyhow::Error::msg)?;
+                    let encoded = inputs
+                        .iter()
+                        .map(|op| Fr::try_from(resolve_operand(&memory, op)?))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let value =
+                        decode_offcircuit(&encoded, &IrType::Bytes(*len)).map_err(|_| {
+                            anyhow!(
+                                "BytesFromNatives: every input must fit in the number of bytes it \
+                                 contributes to the output ({BYTES_PER_FIELD_ELEMENT} bytes, \
+                                 except the last one, which contributes {})",
+                                *len as usize - BYTES_PER_FIELD_ELEMENT * (nb_limbs - 1)
+                            )
+                        })?;
+                    memory.insert(output.clone(), value);
                 }
                 I::Bytes32IntoLowHigh { bytes, outputs } => {
                     let bytes = resolve_operand(&memory, bytes)?;
@@ -1376,6 +1439,46 @@ impl Relation for IrSource {
                         CircuitValue::Bytes(bs[s..end].to_vec()),
                         &mut memory,
                     )?;
+                }
+                I::BytesIntoNatives { bytes, outputs } => {
+                    let value = resolve_operand(std, layouter, &memory, bytes)?;
+                    if !matches!(value, CircuitValue::Bytes(_)) {
+                        return Err(Error::Synthesis(format!(
+                            "BytesIntoNatives expects a Bytes input, found {:?}",
+                            value.get_type()
+                        )));
+                    }
+                    let encoded = encode_incircuit(std, layouter, &value)?;
+                    if encoded.len() != outputs.len() {
+                        return Err(Error::Synthesis(format!(
+                            "BytesIntoNatives: {:?} packs into {} field elements but the instruction has {} outputs",
+                            value.get_type(),
+                            encoded.len(),
+                            outputs.len()
+                        )));
+                    }
+                    for (out_id, enc_val) in outputs.iter().zip(encoded) {
+                        mem_insert(out_id.clone(), enc_val, &mut memory)?;
+                    }
+                }
+                I::BytesFromNatives {
+                    inputs,
+                    len,
+                    output,
+                } => {
+                    bytes_from_natives_nb_limbs(*len, inputs.len()).map_err(Error::Synthesis)?;
+                    let mut bytes = Vec::with_capacity(*len as usize);
+                    for (i, op) in inputs.iter().enumerate() {
+                        let limb: AssignedNative<_> =
+                            resolve_operand(std, layouter, &memory, op)?.try_into()?;
+                        // Every limb but the last contributes a full chunk.
+                        // Decomposing it into exactly the bytes it contributes
+                        // is what enforces `limb < 2^(8 * nb_bytes)`.
+                        let nb_bytes = (*len as usize - BYTES_PER_FIELD_ELEMENT * i)
+                            .min(BYTES_PER_FIELD_ELEMENT);
+                        bytes.extend(std.assigned_to_le_bytes(layouter, &limb, Some(nb_bytes))?);
+                    }
+                    mem_insert(output.clone(), CircuitValue::Bytes(bytes), &mut memory)?;
                 }
                 I::Bytes32IntoLowHigh { bytes, outputs } => {
                     let bytes = resolve_operand(std, layouter, &memory, bytes)?;

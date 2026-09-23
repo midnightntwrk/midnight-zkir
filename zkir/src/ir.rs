@@ -1104,10 +1104,9 @@ pub enum Instruction {
         /// The values returned, one per `IrSource::outputs[i]`.
         vals: Vec<Operand>,
     },
-    /// Transforms the given value into its fixed-size (32-byte)
-    /// representation, a `Bytes(32)`.
+    /// Transforms the given value into its fixed-size byte representation.
     ///
-    /// Supported on the prime-field types:
+    /// Supported on the prime-field types, with a `Bytes(32)` output:
     /// * Native
     /// * JubjubScalar
     /// * Secp256k1Base
@@ -1119,6 +1118,14 @@ pub enum Instruction {
     ///
     /// In all the above prime fields, the byte representation is the
     /// little-endian byte encoding of the underlying (canonical) integer.
+    ///
+    /// Also supported on points, which are encoded in compressed form:
+    /// * Curve25519Point -> Bytes(32), ed25519 (RFC 8032) encoding
+    /// * JubjubPoint -> Bytes(32), same layout as Curve25519Point: the
+    ///   little-endian `y` coordinate, with the least significant bit of `x`
+    ///   in the most significant bit of the last byte
+    /// * Secp256k1Point, Secp256r1Point -> Bytes(33), SEC1 compressed encoding,
+    ///   with the identity encoded as 33 zero bytes (SEC1's `0x00`, zero-padded)
     ToBytes {
         /// The element to be converted
         input: Operand,
@@ -1143,6 +1150,11 @@ pub enum Instruction {
     /// of a 512-bit hash into a `Curve25519Scalar`, as required by ed25519.
     /// For inputs representing an integer below the field order, `ToBytes`
     /// inverts `FromBytes` up to zero-padding to 32 bytes.
+    ///
+    /// Also supported on the point types listed in `ToBytes`, as its inverse.
+    /// The input must then have exactly the length of the compressed
+    /// encoding, and this instruction fails off-circuit, and is unsatisfiable
+    /// in-circuit, on an invalid encoding.
     FromBytes {
         /// The input bytes
         bytes: Operand,

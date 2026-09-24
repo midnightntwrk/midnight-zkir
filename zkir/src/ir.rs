@@ -384,6 +384,10 @@ mod constant_encoding {
 }
 
 /// An individual ZK IR instruction
+//
+// The variant order defines the binary layout: new instructions must be
+// appended at the end, never inserted in the middle, and existing variants
+// must not be reordered.
 #[cfg_attr(feature = "proptest", derive(Arbitrary))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Serializable)]
 #[serde(rename_all = "snake_case", tag = "op")]
@@ -662,27 +666,6 @@ pub enum Instruction {
         /// The output variable name
         output: Identifier,
     },
-    /// Extracts a contiguous sub-slice of a `Bytes(n)` value, returning a
-    /// `Bytes(len)`.
-    ///
-    /// `start` and `len` are compile-time constants; the slice covers positions
-    /// `start .. start + len`. `len` must be at least 1.
-    ///
-    /// # Errors
-    ///
-    /// Errors off-circuit (and fails synthesis in-circuit) if the input is not a
-    /// `Bytes(n)` value, if `len == 0`, or if `start + len > n`. Imposes no
-    /// in-circuit constraints: it selects a fixed range of wires.
-    Slice {
-        /// The byte string to slice
-        bytes: Operand,
-        /// The (constant) start position of the slice
-        start: u32,
-        /// The (constant) length of the slice (`>= 1`)
-        len: u32,
-        /// The output variable name (a `Bytes(len)`)
-        output: Identifier,
-    },
     /// Decomposes a `Bytes32` value into two `Native` field elements.
     ///
     /// The first output (`low`) encodes the first 31 bytes of the input as a
@@ -736,64 +719,6 @@ pub enum Instruction {
     Bytes32FromLowHigh {
         /// The inputs: (low, high)
         inputs: (Operand, Operand),
-        /// The output variable name
-        output: Identifier,
-    },
-    /// Extracts the byte at position `index` of a `Bytes(n)` value, returning a
-    /// `Byte`.
-    ///
-    /// `index` is a compile-time constant that must lie in the range `0..n`,
-    /// where `n` is the length of the input byte string.
-    ///
-    /// # Errors
-    ///
-    /// Errors off-circuit (and fails synthesis in-circuit) if the input is not a
-    /// `Bytes(n)` value, or if `index >= n`. Imposes no in-circuit constraints:
-    /// it simply selects a fixed wire.
-    Nth {
-        /// The byte string to index into
-        bytes: Operand,
-        /// The (constant) position of the byte to extract, in `0..n`
-        index: u32,
-        /// The output variable name (a `Byte`)
-        output: Identifier,
-    },
-    /// Concatenates a non-empty sequence of `Byte` and/or `Bytes(m)` values into
-    /// a single `Bytes(n)` value, where `n` is the sum of the input lengths (a
-    /// `Byte` contributes 1, a `Bytes(m)` contributes `m`).
-    ///
-    /// # Errors
-    ///
-    /// Errors if `inputs` is empty, if any input is neither a `Byte` nor a
-    /// `Bytes` value, or if the resulting length exceeds `MAX_BYTES_LEN`.
-    Concat {
-        /// The `Byte`/`Bytes` values to concatenate, in order
-        inputs: Vec<Operand>,
-        /// The output variable name (a `Bytes(n)`)
-        output: Identifier,
-    },
-    /// Loads a fixed (constant) value of the given `type` into the circuit.
-    ///
-    /// `encoding` is the value's encoded form: the list of field elements that
-    /// [`crate::ir_instructions::encode::encode_offcircuit`] would produce for
-    /// it, written as hex immediates (e.g. `["0x2a"]`). Off-circuit the encoding
-    /// is decoded into a typed value; in-circuit that value is baked in with
-    /// `assign_fixed`.
-    ///
-    /// Supported on every `type`.
-    ///
-    /// # Errors
-    ///
-    /// Errors off-circuit (and fails synthesis in-circuit) if `encoding` is not
-    /// a valid, canonical encoding of a value of `type` (wrong number of field
-    /// elements, non-canonical field element, etc.).
-    LoadConstant {
-        /// The type of the constant
-        #[serde(rename = "type")]
-        val_t: IrType,
-        /// The encoded value, as a list of field-element immediates
-        #[serde(with = "constant_encoding")]
-        encoding: Vec<Fr>,
         /// The output variable name
         output: Identifier,
     },
@@ -859,18 +784,6 @@ pub enum Instruction {
         /// The inputs to hash
         inputs: Vec<Operand>,
         /// The output variable names
-        output: Identifier,
-    },
-    /// Evaluates the SHA-512 hash function on a sequence of items with
-    /// a given alignment.
-    ///
-    /// Outputs a value of type `Bytes<64>`.
-    Sha512 {
-        /// The alignment of the inputs being passed
-        alignment: Alignment,
-        /// The inputs to hash
-        inputs: Vec<Operand>,
-        /// The output variable name
         output: Identifier,
     },
     /// Tests if `a` and `b` are equal.
@@ -990,42 +903,6 @@ pub enum Instruction {
         /// The output variable name
         output: Identifier,
     },
-    /// Boolean AND gate over a non-empty list of `Bool` values.
-    ///
-    /// All `inputs` must be of type `Bool`. Results in an error if the input
-    /// list is empty or if any input is not a `Bool`.
-    ///
-    /// One `Bool` output, the conjunction of all `inputs`
-    And {
-        /// The boolean values to combine
-        inputs: Vec<Operand>,
-        /// The output variable name
-        output: Identifier,
-    },
-    /// Boolean OR gate over a non-empty list of `Bool` values.
-    ///
-    /// All `inputs` must be of type `Bool`. Results in an error if the input
-    /// list is empty or if any input is not a `Bool`.
-    ///
-    /// One `Bool` output, the disjunction of all `inputs`
-    Or {
-        /// The boolean values to combine
-        inputs: Vec<Operand>,
-        /// The output variable name
-        output: Identifier,
-    },
-    /// Boolean XOR gate over a non-empty list of `Bool` values.
-    ///
-    /// All `inputs` must be of type `Bool`. Results in an error if the input
-    /// list is empty or if any input is not a `Bool`.
-    ///
-    /// One `Bool` output, the exclusive-or (parity) of all `inputs`
-    Xor {
-        /// The boolean values to combine
-        inputs: Vec<Operand>,
-        /// The output variable name
-        output: Identifier,
-    },
     /// Checks if `a` < `b`, interpreting both as `bits`-bit unsigned
     /// integers. UB if `a` or `b` exceed `bits`.
     ///
@@ -1103,6 +980,136 @@ pub enum Instruction {
     Output {
         /// The values returned, one per `IrSource::outputs[i]`.
         vals: Vec<Operand>,
+    },
+    //
+    // ==================== END OF ZKIR 3.0 INSTRUCTIONS ====================
+    //
+    /// Extracts a contiguous sub-slice of a `Bytes(n)` value, returning a
+    /// `Bytes(len)`.
+    ///
+    /// `start` and `len` are compile-time constants; the slice covers positions
+    /// `start .. start + len`. `len` must be at least 1.
+    ///
+    /// # Errors
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if the input is not a
+    /// `Bytes(n)` value, if `len == 0`, or if `start + len > n`. Imposes no
+    /// in-circuit constraints: it selects a fixed range of wires.
+    Slice {
+        /// The byte string to slice
+        bytes: Operand,
+        /// The (constant) start position of the slice
+        start: u32,
+        /// The (constant) length of the slice (`>= 1`)
+        len: u32,
+        /// The output variable name (a `Bytes(len)`)
+        output: Identifier,
+    },
+    /// Extracts the byte at position `index` of a `Bytes(n)` value, returning a
+    /// `Byte`.
+    ///
+    /// `index` is a compile-time constant that must lie in the range `0..n`,
+    /// where `n` is the length of the input byte string.
+    ///
+    /// # Errors
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if the input is not a
+    /// `Bytes(n)` value, or if `index >= n`. Imposes no in-circuit constraints:
+    /// it simply selects a fixed wire.
+    Nth {
+        /// The byte string to index into
+        bytes: Operand,
+        /// The (constant) position of the byte to extract, in `0..n`
+        index: u32,
+        /// The output variable name (a `Byte`)
+        output: Identifier,
+    },
+    /// Concatenates a non-empty sequence of `Byte` and/or `Bytes(m)` values into
+    /// a single `Bytes(n)` value, where `n` is the sum of the input lengths (a
+    /// `Byte` contributes 1, a `Bytes(m)` contributes `m`).
+    ///
+    /// # Errors
+    ///
+    /// Errors if `inputs` is empty, if any input is neither a `Byte` nor a
+    /// `Bytes` value, or if the resulting length exceeds `MAX_BYTES_LEN`.
+    Concat {
+        /// The `Byte`/`Bytes` values to concatenate, in order
+        inputs: Vec<Operand>,
+        /// The output variable name (a `Bytes(n)`)
+        output: Identifier,
+    },
+    /// Loads a fixed (constant) value of the given `type` into the circuit.
+    ///
+    /// `encoding` is the value's encoded form: the list of field elements that
+    /// [`crate::ir_instructions::encode::encode_offcircuit`] would produce for
+    /// it, written as hex immediates (e.g. `["0x2a"]`). Off-circuit the encoding
+    /// is decoded into a typed value; in-circuit that value is baked in with
+    /// `assign_fixed`.
+    ///
+    /// Supported on every `type`.
+    ///
+    /// # Errors
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if `encoding` is not
+    /// a valid, canonical encoding of a value of `type` (wrong number of field
+    /// elements, non-canonical field element, etc.).
+    LoadConstant {
+        /// The type of the constant
+        #[serde(rename = "type")]
+        val_t: IrType,
+        /// The encoded value, as a list of field-element immediates
+        #[serde(with = "constant_encoding")]
+        encoding: Vec<Fr>,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Evaluates the SHA-512 hash function on a sequence of items with
+    /// a given alignment.
+    ///
+    /// Outputs a value of type `Bytes<64>`.
+    Sha512 {
+        /// The alignment of the inputs being passed
+        alignment: Alignment,
+        /// The inputs to hash
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Boolean AND gate over a non-empty list of `Bool` values.
+    ///
+    /// All `inputs` must be of type `Bool`. Results in an error if the input
+    /// list is empty or if any input is not a `Bool`.
+    ///
+    /// One `Bool` output, the conjunction of all `inputs`
+    And {
+        /// The boolean values to combine
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Boolean OR gate over a non-empty list of `Bool` values.
+    ///
+    /// All `inputs` must be of type `Bool`. Results in an error if the input
+    /// list is empty or if any input is not a `Bool`.
+    ///
+    /// One `Bool` output, the disjunction of all `inputs`
+    Or {
+        /// The boolean values to combine
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Boolean XOR gate over a non-empty list of `Bool` values.
+    ///
+    /// All `inputs` must be of type `Bool`. Results in an error if the input
+    /// list is empty or if any input is not a `Bool`.
+    ///
+    /// One `Bool` output, the exclusive-or (parity) of all `inputs`
+    Xor {
+        /// The boolean values to combine
+        inputs: Vec<Operand>,
+        /// The output variable name
+        output: Identifier,
     },
     /// Transforms the given value into its fixed-size byte representation.
     ///
@@ -1256,6 +1263,9 @@ pub enum Instruction {
         /// The output variable name (a `Bytes(len)`)
         output: Identifier,
     },
+    //
+    // ==================== END OF ZKIR 3.1 INSTRUCTIONS ====================
+    //
 }
 tag_enforcement_test!(Instruction);
 

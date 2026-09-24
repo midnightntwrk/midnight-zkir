@@ -51,8 +51,10 @@ pub const MAX_BYTES_LEN: u32 = 1 << 24;
 /// `Serialize`/`Deserialize` impls below) rather than through
 /// `#[serde(rename)]`, so that the parametrized `Bytes<n>` form is supported
 /// for every `n >= 1`.
-#[derive(Clone, Debug, PartialEq, Serializable)]
-#[tag = "ir-type[v1]"]
+///
+/// The binary encoding is also written by hand, to keep the ZKIR 3.0 layout
+/// (see [`IrType::discriminant`]).
+#[derive(Clone, Debug, PartialEq)]
 pub enum IrType {
     /// Element of the BLS12-381 scalar field, a.k.a. the native field.
     /// This is also the base field of Jubjub.
@@ -214,6 +216,94 @@ impl<'de> Deserialize<'de> for IrType {
         let s = <String as Deserialize>::deserialize(deserializer)?;
         IrType::from_type_string(&s)
             .ok_or_else(|| de::Error::custom(format!("invalid IR type: {s:?}")))
+    }
+}
+
+impl IrType {
+    /// Binary discriminant. `0..=12` is the ZKIR 3.0 layout, where `1` was
+    /// `Bytes32` (now `Bytes(32)`, still without payload). Newer types are
+    /// appended; `15` is `Bytes(n)` for `n != 32`, followed by `n`.
+    fn discriminant(&self) -> u8 {
+        match self {
+            IrType::Native => 0,
+            IrType::Bytes(32) => 1,
+            IrType::JubjubPoint => 2,
+            IrType::JubjubScalar => 3,
+            IrType::Secp256k1Point => 4,
+            IrType::Secp256k1Base => 5,
+            IrType::Secp256k1Scalar => 6,
+            IrType::Secp256r1Point => 7,
+            IrType::Secp256r1Base => 8,
+            IrType::Secp256r1Scalar => 9,
+            IrType::Curve25519Point => 10,
+            IrType::Curve25519Base => 11,
+            IrType::Curve25519Scalar => 12,
+            IrType::Bool => 13,
+            IrType::Byte => 14,
+            IrType::Bytes(_) => 15,
+        }
+    }
+}
+
+impl Serializable for IrType {
+    fn serialize(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
+        Serializable::serialize(&self.discriminant(), writer)?;
+        match self {
+            IrType::Bytes(n) if *n != 32 => Serializable::serialize(n, writer),
+            _ => Ok(()),
+        }
+    }
+
+    fn serialized_size(&self) -> usize {
+        1 + match self {
+            IrType::Bytes(n) if *n != 32 => n.serialized_size(),
+            _ => 0,
+        }
+    }
+}
+
+impl Deserializable for IrType {
+    fn deserialize(reader: &mut impl std::io::Read, recursion_depth: u32) -> std::io::Result<Self> {
+        let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
+        Ok(
+            match <u8 as Deserializable>::deserialize(reader, recursion_depth)? {
+                0 => IrType::Native,
+                1 => IrType::Bytes(32),
+                2 => IrType::JubjubPoint,
+                3 => IrType::JubjubScalar,
+                4 => IrType::Secp256k1Point,
+                5 => IrType::Secp256k1Base,
+                6 => IrType::Secp256k1Scalar,
+                7 => IrType::Secp256r1Point,
+                8 => IrType::Secp256r1Base,
+                9 => IrType::Secp256r1Scalar,
+                10 => IrType::Curve25519Point,
+                11 => IrType::Curve25519Base,
+                12 => IrType::Curve25519Scalar,
+                13 => IrType::Bool,
+                14 => IrType::Byte,
+                15 => {
+                    let n = <u32 as Deserializable>::deserialize(reader, recursion_depth)?;
+                    // `Bytes(32)` has its own discriminant, so reject it here to
+                    // keep the encoding canonical.
+                    if n == 0 || n == 32 || n > MAX_BYTES_LEN {
+                        return Err(invalid(format!("invalid Bytes length: {n}")));
+                    }
+                    IrType::Bytes(n)
+                }
+                d => return Err(invalid(format!("unrecognised IrType discriminant: {d}"))),
+            },
+        )
+    }
+}
+
+impl Tagged for IrType {
+    fn tag() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("ir-type[v1]")
+    }
+
+    fn tag_unique_factor() -> String {
+        format!("[{}(),(),({})]", "(),".repeat(13), u32::tag())
     }
 }
 

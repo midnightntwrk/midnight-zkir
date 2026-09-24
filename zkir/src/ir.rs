@@ -696,6 +696,9 @@ pub enum Instruction {
     /// This instruction is a temporary bridge for Compact, which cannot yet deal with
     /// `Bytes32` values directly. It is intended to be removed once Compact can handle
     /// `Bytes32` (or `Bytes(n)`) without decomposing it into field elements.
+    ///
+    /// **Deprecated:** this instruction is slated for removal and should not be
+    /// used in new circuits.  Use `BytesIntoNatives` instead.
     Bytes32IntoLowHigh {
         /// The input bytes
         bytes: Operand,
@@ -725,6 +728,9 @@ pub enum Instruction {
     /// This instruction is a temporary bridge for Compact, which cannot yet deal with
     /// `Bytes32` values directly. It is intended to be removed once Compact can handle
     /// `Bytes32` (or `Bytes(n)`) without decomposing it into field elements.
+    ///
+    /// **Deprecated:** this instruction is slated for removal and should not be
+    /// used in new circuits.  Use `BytesFromNatives` instead.
     Bytes32FromLowHigh {
         /// The inputs: (low, high)
         inputs: (Operand, Operand),
@@ -1153,6 +1159,82 @@ pub enum Instruction {
         /// The bytes to be reversed
         bytes: Operand,
         /// The output variable name
+        output: Identifier,
+    },
+    /// Packs a `Bytes(n)` value into `ceil(n / 31)` `Native` field elements.
+    ///
+    /// The input bytes are split into consecutive chunks of 31 bytes (the last
+    /// chunk being shorter when `n` is not a multiple of 31), and every chunk is
+    /// interpreted as a little-endian native field element. This is the packing
+    /// that [`Instruction::Encode`] applies to a `Bytes(n)` value; for `n = 32`
+    /// it yields the first 31 bytes as one field element and the 32nd (most
+    /// significant) byte as another.
+    ///
+    /// The chunk size is not a constant of the IR but of the native field: 31 is
+    /// the number of whole bytes that always fit below its modulus, currently
+    /// the BLS12-381 scalar field at ~254 bits. It is parametrized as
+    /// `BYTES_PER_FIELD_ELEMENT` in `crate::ir_types`, and a different native
+    /// field would give a different number.
+    ///
+    /// This is the inverse of `BytesFromNatives`.
+    ///
+    /// # Errors and constraints
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if the input is not a
+    /// `Bytes(n)` value, or if the number of outputs is not `ceil(n / 31)`.
+    ///
+    /// Imposes no in-circuit range checks: a chunk of at most 31 bytes always
+    /// fits in a field element.
+    ///
+    /// # Note
+    ///
+    /// This instruction is a temporary bridge for Compact, which cannot yet deal with
+    /// `Bytes(n)` values directly. It is intended to be removed once Compact can handle
+    /// `Bytes(n)` without decomposing it into field elements.
+    BytesIntoNatives {
+        /// The input bytes
+        bytes: Operand,
+        /// The output variable names, `ceil(n / 31)` of them, ordered from the
+        /// chunk holding the first bytes of the input to the chunk holding the
+        /// last ones
+        outputs: Vec<Identifier>,
+    },
+    /// Unpacks `ceil(len / 31)` `Native` field elements into a `Bytes(len)` value.
+    ///
+    /// Every input encodes 31 bytes of the result in little-endian form, except
+    /// the last one, which encodes the remaining `len - 31 * (k - 1)` bytes,
+    /// where `k` is the number of inputs. Each input must therefore be less than
+    /// `2^(8 * r)`, `r` being the number of bytes it contributes.
+    ///
+    /// As in `BytesIntoNatives`, 31 is `BYTES_PER_FIELD_ELEMENT` (see
+    /// `crate::ir_types`), which follows from the native field in use.
+    ///
+    /// This is the inverse of `BytesIntoNatives`.
+    ///
+    /// # Errors and constraints
+    ///
+    /// Errors off-circuit (and fails synthesis in-circuit) if `len` is not in
+    /// `1..=MAX_BYTES_LEN`, or if the number of inputs is not `ceil(len / 31)`.
+    ///
+    /// Off-circuit: returns an error if an input is not less than `2^(8 * r)`,
+    /// `r` being the number of bytes it contributes.
+    ///
+    /// In-circuit: each input is decomposed into exactly the `r` bytes it
+    /// contributes, which enforces `input < 2^(8 * r)`, making the circuit
+    /// unsatisfiable if violated.
+    ///
+    /// # Note
+    ///
+    /// This instruction is a temporary bridge for Compact, which cannot yet deal with
+    /// `Bytes(n)` values directly. It is intended to be removed once Compact can handle
+    /// `Bytes(n)` without decomposing it into field elements.
+    BytesFromNatives {
+        /// The inputs, `ceil(len / 31)` of them, ordered from the chunk holding
+        /// the first bytes of the output to the chunk holding the last ones
+        inputs: Vec<Operand>,
+        /// The (constant) length in bytes of the output
+        len: u32,
+        /// The output variable name (a `Bytes(len)`)
         output: Identifier,
     },
 }

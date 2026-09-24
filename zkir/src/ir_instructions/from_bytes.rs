@@ -22,13 +22,14 @@ use num_traits::Euclid;
 use transient_crypto::curve::Fr;
 
 use crate::{
-    ir_instructions::F,
+    ir_instructions::{F, encode::jubjub_scalar_from_biguint},
     ir_types::{CircuitValue, IrType, IrValue},
 };
 
 /// Builds (off-circuit) a value of the given type from a byte string of any
 /// length. Supported for the prime-field types:
 ///  - Native
+///  - JubjubScalar
 ///  - Secp256k1Base
 ///  - Secp256k1Scalar
 ///  - Secp256r1Base
@@ -50,6 +51,8 @@ pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, an
     match val_t {
         IrType::Native => Ok(Native(Fr(from_le_bytes_with_reduction(bytes)))),
 
+        IrType::JubjubScalar => Ok(JubjubScalar(from_le_bytes_with_reduction(bytes))),
+
         IrType::Secp256k1Base => Ok(Secp256k1Base(from_le_bytes_with_reduction(bytes))),
 
         IrType::Secp256k1Scalar => Ok(Secp256k1Scalar(from_le_bytes_with_reduction(bytes))),
@@ -69,6 +72,7 @@ pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, an
 /// Builds (in-circuit) a value of the given type from a byte string of any
 /// length. Supported for the prime-field types:
 ///  - Native
+///  - JubjubScalar
 ///  - Secp256k1Base
 ///  - Secp256k1Scalar
 ///  - Secp256r1Base
@@ -94,6 +98,11 @@ pub fn from_bytes_incircuit(
 
     match val_t {
         IrType::Native => std_lib.assigned_from_le_bytes(layouter, bytes).map(Native),
+
+        IrType::JubjubScalar => {
+            let x = std_lib.biguint().from_le_bytes(layouter, bytes)?;
+            jubjub_scalar_from_biguint(std_lib, layouter, x).map(JubjubScalar)
+        }
 
         IrType::Secp256k1Base => std_lib
             .secp256k1()
@@ -149,7 +158,7 @@ pub(crate) fn from_le_bytes_with_reduction<F: CircuitField>(bytes: &[u8]) -> F {
 #[cfg(test)]
 mod tests {
     use group::ff::Field;
-    use midnight_curves::{curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, curve25519, k256, p256};
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
 
@@ -168,6 +177,7 @@ mod tests {
 
         for x in [
             Native(Fr(F::random(OsRng))),
+            JubjubScalar(JubjubFr::random(OsRng)),
             Secp256k1Base(k256::Fp::random(OsRng)),
             Secp256k1Scalar(k256::Fq::random(OsRng)),
             Secp256r1Base(p256::Fp::random(OsRng)),
@@ -194,6 +204,7 @@ mod tests {
     fn test_from_bytes_arbitrary_length() {
         for val_t in [
             IrType::Native,
+            IrType::JubjubScalar,
             IrType::Secp256k1Base,
             IrType::Secp256k1Scalar,
             IrType::Secp256r1Base,
@@ -224,6 +235,10 @@ mod tests {
         assert_eq!(
             from_bytes_offcircuit(&IrType::Native, &bytes).unwrap(),
             IrValue::Native(Fr(from_le_bytes_with_reduction(&bytes)))
+        );
+        assert_eq!(
+            from_bytes_offcircuit(&IrType::JubjubScalar, &bytes).unwrap(),
+            IrValue::JubjubScalar(from_le_bytes_with_reduction(&bytes))
         );
         assert_eq!(
             from_bytes_offcircuit(&IrType::Secp256k1Base, &bytes).unwrap(),

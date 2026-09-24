@@ -11,7 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use midnight_circuits::{CircuitField, instructions::DecompositionInstructions};
+use midnight_circuits::{
+    CircuitField,
+    instructions::{AssertionInstructions, AssignmentInstructions, DecompositionInstructions},
+};
 
 use midnight_proofs::{circuit::Layouter, plonk};
 use midnight_zk_stdlib::ZkStdLib;
@@ -24,6 +27,7 @@ use crate::{
 /// Converts (off-circuit) the given value into its fixed-size (32-byte)
 /// representation. Supported on the prime-field types:
 ///  - Native
+///  - JubjubScalar
 ///  - Secp256k1Base
 ///  - Secp256k1Scalar
 ///  - Secp256r1Base
@@ -45,6 +49,8 @@ pub fn to_bytes_offcircuit(value: &IrValue) -> Result<IrValue, anyhow::Error> {
     use IrValue::*;
     match value {
         Native(x) => Ok(Bytes(x.0.to_bytes_le().to_vec())),
+
+        JubjubScalar(s) => Ok(Bytes(s.to_bytes_le().to_vec())),
 
         Secp256k1Base(s) => Ok(Bytes(s.to_bytes_le().to_vec())),
 
@@ -68,6 +74,7 @@ pub fn to_bytes_offcircuit(value: &IrValue) -> Result<IrValue, anyhow::Error> {
 /// Converts (in-circuit) the given value into its fixed-size (32-byte)
 /// representation. Supported on the prime-field types:
 ///  - Native
+///  - JubjubScalar
 ///  - Secp256k1Base
 ///  - Secp256k1Scalar
 ///  - Secp256r1Base
@@ -94,6 +101,19 @@ pub fn to_bytes_incircuit(
         Native(x) => std_lib
             .assigned_to_le_bytes(layouter, x, Some(32))
             .map(Bytes),
+
+        JubjubScalar(s) => {
+            let canonical = s.to_canonical_biguint(layouter, std_lib.biguint())?;
+            let mut bytes = std_lib.biguint().to_le_bytes(layouter, &canonical)?;
+            // The byte count follows the scalar's limb count rather than the
+            // field size, so the encoding has to be cut or padded to 32 bytes.
+            for byte in bytes.iter().skip(32) {
+                std_lib.assert_equal_to_fixed(layouter, byte, 0u8)?;
+            }
+            bytes.resize(32, std_lib.assign_fixed(layouter, 0u8)?);
+
+            Ok(Bytes(bytes))
+        }
 
         Secp256k1Base(s) => std_lib
             .secp256k1()
@@ -141,7 +161,7 @@ pub fn to_bytes_incircuit(
 #[cfg(test)]
 mod tests {
     use group::ff::Field;
-    use midnight_curves::{curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, curve25519, k256, p256};
     use rand_chacha::rand_core::OsRng;
     use transient_crypto::curve::Fr;
 
@@ -154,6 +174,7 @@ mod tests {
 
         for x in [
             Native(Fr(F::random(OsRng))),
+            JubjubScalar(JubjubFr::random(OsRng)),
             Secp256k1Base(k256::Fp::random(OsRng)),
             Secp256k1Scalar(k256::Fq::random(OsRng)),
             Secp256r1Base(p256::Fp::random(OsRng)),
@@ -175,6 +196,7 @@ mod tests {
 
         for x in [
             Native(Fr(F::random(OsRng))),
+            JubjubScalar(JubjubFr::random(OsRng)),
             Secp256k1Base(k256::Fp::random(OsRng)),
             Secp256k1Scalar(k256::Fq::random(OsRng)),
             Secp256r1Base(p256::Fp::random(OsRng)),

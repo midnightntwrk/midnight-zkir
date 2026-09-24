@@ -238,10 +238,10 @@ impl IrType {
             IrType::Curve25519Point => 10,
             IrType::Curve25519Base => 11,
             IrType::Curve25519Scalar => 12,
-            IrType::Bool => 13,
             // ===== END OF ZKIR 3.0 TYPES =====
             // These discriminants define the binary layout: new types must be
             // appended at the end, and existing ones must not be renumbered.
+            IrType::Bool => 13,
             IrType::Byte => 14,
             IrType::Bytes(_) => 15,
         }

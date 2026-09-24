@@ -306,15 +306,27 @@ jobs:
             exit 0
           fi
 
-          PRERELEASE_FLAG=""
+          NOTES_FILE="${GITHUB_WORKSPACE}/.github/release-notes/${TAG_NAME}.md"
+
+          IS_PRERELEASE=false
           case "${VERSION}" in
-            *-rc*|*-alpha*|*-beta*) PRERELEASE_FLAG="--prerelease" ;;
+            *-rc*|*-alpha*|*-beta*) IS_PRERELEASE=true ;;
           esac
 
           if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
             echo "Release ${TAG_NAME} exists - refreshing assets."
             gh release upload "${TAG_NAME}" "${STAGING}"/* --clobber
-          else
+          elif [ "${IS_PRERELEASE}" = "true" ]; then
+            # Pre-releases always use auto-generated notes.
             gh release create "${TAG_NAME}" --title "ZKIR ${VERSION}" \
-              --generate-notes ${PRERELEASE_FLAG} "${STAGING}"/*
+              --generate-notes --prerelease "${STAGING}"/*
+          elif [ -f "${NOTES_FILE}" ]; then
+            # Curated notes, scaffolded by the Prepare workflow and written in
+            # the release PR.
+            gh release create "${TAG_NAME}" --title "ZKIR ${VERSION}" \
+              --notes-file "${NOTES_FILE}" "${STAGING}"/*
+          else
+            echo "::warning::No release notes at .github/release-notes/${TAG_NAME}.md - creating release with auto-generated notes. Add the file before release to use curated notes."
+            gh release create "${TAG_NAME}" --title "ZKIR ${VERSION}" \
+              --generate-notes "${STAGING}"/*
           fi

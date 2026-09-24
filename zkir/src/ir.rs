@@ -384,6 +384,10 @@ mod constant_encoding {
 }
 
 /// An individual ZK IR instruction
+//
+// The variant order defines the binary layout: new instructions must be
+// appended at the end, never inserted in the middle, and existing variants
+// must not be reordered.
 #[cfg_attr(feature = "proptest", derive(Arbitrary))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Serializable)]
 #[serde(rename_all = "snake_case", tag = "op")]
@@ -977,6 +981,9 @@ pub enum Instruction {
         /// The values returned, one per `IrSource::outputs[i]`.
         vals: Vec<Operand>,
     },
+    //
+    // ==================== END OF ZKIR 3.0 INSTRUCTIONS ====================
+    //
     /// Extracts a contiguous sub-slice of a `Bytes(n)` value, returning a
     /// `Bytes(len)`.
     ///
@@ -1256,6 +1263,9 @@ pub enum Instruction {
         /// The output variable name (a `Bytes(len)`)
         output: Identifier,
     },
+    //
+    // ==================== END OF ZKIR 3.1 INSTRUCTIONS ====================
+    //
 }
 tag_enforcement_test!(Instruction);
 

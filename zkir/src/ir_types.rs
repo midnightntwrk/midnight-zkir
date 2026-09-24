@@ -132,6 +132,17 @@ impl IrType {
         }
     }
 
+    /// Whether this is a curve point type.
+    pub(crate) fn is_point(&self) -> bool {
+        matches!(
+            self,
+            IrType::JubjubPoint
+                | IrType::Secp256k1Point
+                | IrType::Secp256r1Point
+                | IrType::Curve25519Point
+        )
+    }
+
     /// Canonical string representation used in the serde (JSON) encoding.
     fn to_type_string(&self) -> String {
         match self {

@@ -121,13 +121,7 @@ pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, an
 
     // Field elements are reduced from bytes of any length, but points must be
     // given in canonical form.
-    if matches!(
-        val_t,
-        IrType::JubjubPoint
-            | IrType::Secp256k1Point
-            | IrType::Secp256r1Point
-            | IrType::Curve25519Point
-    ) {
+    if val_t.is_point() {
         let re_encoded: Vec<u8> = to_bytes_offcircuit(&decoded)?.try_into()?;
         if re_encoded != bytes {
             return Err(anyhow::anyhow!(
@@ -168,7 +162,8 @@ pub fn from_bytes_offcircuit(val_t: &IrType, bytes: &[u8]) -> Result<IrValue, an
 ///
 /// # Unsatisfiable Circuit
 ///
-/// If `bytes` are not the canonical encoding of a point of the given type.
+/// When `val_t` is a curve point type, if `bytes` are not the canonical
+/// encoding of a point of that type.
 pub fn from_bytes_incircuit(
     std_lib: &ZkStdLib,
     layouter: &mut impl Layouter<F>,

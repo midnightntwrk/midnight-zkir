@@ -1,0 +1,182 @@
+name: Prepare ZKIR Release
+
+# ZKIR-only release prep, modeled on midnight-ledger's "Prepare Ledger
+# Release". Dispatch it from the branch to release with the new version(s);
+# it bumps the manifests, refreshes Cargo.lock, promotes the changelog,
+# scaffolds release notes (final releases only), regenerates the wasm API
+# docs, and opens a reviewable release PR. After that PR merges, run
+# "Publish ZKIR Release" on the same branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New zkir crate version (drives the zkir-<version> git tag), e.g. "3.1.0-rc.1"'
+        required: true
+        type: string
+      wasm_version:
+        description: 'New zkir-wasm version (the published npm version). Defaults to `version`.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+            extra-substituters = https://cache.iog.io file://${{ runner.temp }}/nix-binary-cache
+            accept-flake-config = true
+
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+
+      - name: Configure cargo
+        run: .github/scripts/configure-cargo.sh
+
+      # Node is needed to regenerate the wasm markdown API docs (typedoc). Docs
+      # generation is node-only - it runs over the committed .d.ts files.
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Compute release identifiers
+        id: ver
+        # Pass the inputs via env (not inline ${{ }}) so they cannot inject shell.
+        env:
+          VERSION: ${{ inputs.version }}
+          WASM_VERSION: ${{ inputs.wasm_version }}
+        run: |
+          set -euo pipefail
+          WASM_VERSION="${WASM_VERSION:-$VERSION}"
+          for v in "$VERSION" "$WASM_VERSION"; do
+            echo "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+              || { echo "::error::not a semver version: $v"; exit 1; }
+          done
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "wasm_version=${WASM_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=zkir-${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump crate versions
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          WASM_VERSION: ${{ steps.ver.outputs.wasm_version }}
+        run: |
+          set -euo pipefail
+          bump() { # bump <manifest> <version>: replace the first top-level `version = "..."`
+            awk -v v="$2" '!done && /^version = / {sub(/"[^"]*"/, "\"" v "\""); done=1} {print}' "$1" > "$1.tmp"
+            mv "$1.tmp" "$1"
+            grep -qE "^version = \"$2\"" "$1" || { echo "::error::failed to set version in $1"; exit 1; }
+            echo "bumped $1 -> $2"
+          }
+          bump zkir/Cargo.toml "$VERSION"
+          bump zkir-wasm/Cargo.toml "$WASM_VERSION"
+          # Sync the npm manifest to the wasm crate version.
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$WASM_VERSION\"/" zkir-wasm/package.json
+          echo "synced zkir-wasm/package.json -> $WASM_VERSION"
+
+      - name: Refresh Cargo.lock
+        run: nix develop -c cargo metadata --format-version 1 >/dev/null
+
+      - name: Draft changelog and release notes
+        # Pass step outputs via env (not inline ${{ }}) so they cannot inject shell.
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Promote the curated "## Unreleased" section into the release heading,
+          # leaving a fresh empty "## Unreleased" - the dev-curated bullets become
+          # the release changelog, matching the manual process. Fall back to a
+          # git-log draft only if there is no "## Unreleased" section.
+          if grep -q "^## ZKIR ${VERSION}$" CHANGELOG.md; then
+            echo "CHANGELOG.md already has the ${VERSION} section - skipping"
+          elif grep -q '^## Unreleased' CHANGELOG.md; then
+            awk -v d="$VERSION" '!done && /^## Unreleased/ {print; print ""; printf "## ZKIR %s\n", d; done=1; next} {print}' \
+              CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+          else
+            BULLETS="$(.github/scripts/draft-release-bullets.sh)"
+            printf '## ZKIR %s\n\n%s\n\n' "$VERSION" "$BULLETS" > "${RUNNER_TEMP}/section.md"
+            awk 'FNR==NR{sec = sec $0 "\n"; next} /^## /&&!ins{printf "%s", sec; ins=1} {print}' \
+              "${RUNNER_TEMP}/section.md" CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+          fi
+
+          # Scaffold the release-notes file from the template (idempotent), seeded
+          # with a git-log draft as a starting point for the human-written summary.
+          # Pre-releases don't get curated release notes.
+          case "${VERSION}" in
+            *-rc*|*-alpha*|*-beta*) echo "Pre-release detected - skipping release notes scaffold." ;;
+            *)
+              NOTES=".github/release-notes/${TAG}.md"
+              if [ ! -f "$NOTES" ]; then
+                BULLETS="$(.github/scripts/draft-release-bullets.sh)"
+                sed -e "s/<VERSION>/${VERSION}/g" .github/release-notes/TEMPLATE.md > "$NOTES"
+                printf '\n<!-- Draft bullets from commits since the last tag: -->\n%s\n' "$BULLETS" >> "$NOTES"
+              fi
+              ;;
+          esac
+
+      # Regenerate the wasm markdown API docs so they land in the reviewable
+      # release PR (via the `git add -A` below). Node-only; runs over the
+      # committed .d.ts file - no cargo/nix needed.
+      - name: Regenerate API docs
+        run: |
+          set -euo pipefail
+          ( cd zkir-wasm && npm install && npm run build:markdown-docs )
+
+      - name: Open release PR
+        # TAG via env (not inline ${{ }}) so it cannot inject shell.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/${TAG}"
+          # Exclude .cargo/ (configure-cargo.sh writes an untracked config there)
+          # so the generated file is not committed into the release PR.
+          git add -A -- ':!.cargo'
+          # Create the branch at the checked-out commit, then commit the bumps onto
+          # it as a GitHub-signed (verified) commit so branch protection that
+          # requires signed commits accepts the PR.
+          gh api --method POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/heads/${BRANCH}" -f sha="$(git rev-parse HEAD)" >/dev/null 2>&1 \
+            || echo "branch ${BRANCH} already exists; committing onto it"
+          .github/scripts/gh-commit.sh "$BRANCH" "chore: prepare ${TAG}"
+          gh pr create --base "${GITHUB_REF_NAME}" --head "$BRANCH" \
+            --title "Prepare ${TAG}" \
+            --body "$(
+              ITEMS=()
+              ITEMS+=("- [ ] Versions correct (see \`Cargo.toml\` / \`Cargo.lock\` diff)")
+              ITEMS+=("- [ ] \`CHANGELOG.md\` draft reviewed and edited")
+              ITEMS+=("- [ ] Regenerated \`docs/api/**\` diff looks right")
+              case "${TAG}" in
+                *-rc*|*-alpha*|*-beta*) ;;
+                *) ITEMS+=("- [ ] \`.github/release-notes/${TAG}.md\` prose written") ;;
+              esac
+              printf '%s\n' \
+                "Automated release prep for \`${TAG}\`." \
+                "" \
+                "${ITEMS[@]}" \
+                "" \
+                "After merge, run **Publish ZKIR Release** on \`${GITHUB_REF_NAME}\`."
+            )"

@@ -93,9 +93,16 @@ pub fn encode_incircuit(
         CircuitValue::Native(x) => std_lib.as_public_input(layouter, x),
         CircuitValue::Bool(b) => std_lib.as_public_input(layouter, b),
         CircuitValue::Byte(b) => std_lib.as_public_input(layouter, b),
+        // A 1-byte chunk is converted directly, as ZKIR 3.0 did for the high
+        // limb of `Bytes32`: `assigned_from_le_bytes` would record a bound on
+        // the result, which changes later range checks and hence the circuit.
+        // TODO: Remove in ZKIRv4
         CircuitValue::Bytes(bs) => bs
             .chunks(BYTES_PER_FIELD_ELEMENT)
-            .map(|chunk| std_lib.assigned_from_le_bytes(layouter, chunk))
+            .map(|chunk| match chunk {
+                [b] => Ok(b.clone().into()),
+                _ => std_lib.assigned_from_le_bytes(layouter, chunk),
+            })
             .collect::<Result<Vec<_>, _>>(),
         CircuitValue::JubjubPoint(p) => std_lib.jubjub().as_public_input(layouter, p),
         CircuitValue::JubjubScalar(s) => {

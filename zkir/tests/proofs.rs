@@ -18,7 +18,7 @@ mod common;
 mod proof_tests {
     use super::common::{TestParams, TestResolver};
     use group::{Group, ff::Field};
-    use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
+    use midnight_curves::{Fr as JubjubFr, JubjubSubgroup, curve25519, k256, p256};
     use midnight_zkir::{
         Identifier, IrSource, Preprocessed, ir_instructions::encode::encode_offcircuit,
         ir_types::IrValue,
@@ -454,6 +454,105 @@ mod proof_tests {
             communications_commitment: None,
             inputs: vec![12345.into(), 6789.into()],
             private_transcript: vec![],
+            public_transcript_inputs: vec![],
+            public_transcript_outputs: vec![],
+            key_location: KeyLocation(Cow::Borrowed("builtin")),
+        };
+        let (proof, _) = preimage
+            .prove::<IrSource>(
+                &mut ChaCha20Rng::from_seed([42; 32]),
+                &TestParams,
+                &TestResolver {
+                    pk: pk.clone(),
+                    vk: vk.clone(),
+                    ir: ir.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
+            .unwrap();
+    }
+
+    /// Exercises `to_bytes` / `from_bytes` on `Scalar<Jubjub>`. Unlike the
+    /// other field types, a Jubjub scalar is held in-circuit as a bit vector
+    /// that is not constrained to be canonical, so both directions go through
+    /// an explicit reduction modulo the group order.
+    ///
+    /// The circuit round-trips a scalar through both instructions, pins the
+    /// byte encodings of a witnessed scalar and of a small constant against the
+    /// off-circuit reference, and reduces an all-`0xff` byte string, which
+    /// exceeds the group order.
+    #[actix_rt::test]
+    async fn test_jubjub_scalar_bytes_proof() {
+        use midnight_zkir::ir_instructions::from_bytes::from_bytes_offcircuit;
+        use midnight_zkir::ir_instructions::to_bytes::to_bytes_offcircuit;
+        use midnight_zkir::ir_types::IrType;
+
+        let ir_raw = r#"{
+           "version": { "major": 3, "minor": 0 },
+           "inputs": [
+              { "name": "%s",   "type": "Scalar<Jubjub>" },
+              { "name": "%raw", "type": "Bytes<32>"      }
+           ],
+           "outputs": [],
+           "do_communications_commitment": false,
+           "instructions": [
+               { "op": "to_bytes", "input": "%s", "output": "%s_bytes" },
+               { "op": "from_bytes", "bytes": "%s_bytes", "type": "Scalar<Jubjub>", "output": "%s_back" },
+               { "op": "constrain_eq", "a": "%s_back", "b": "%s" },
+
+               { "op": "private_input", "type": "Bytes<32>", "guard": null, "output": "%s_bytes_exp" },
+               { "op": "constrain_eq", "a": "%s_bytes", "b": "%s_bytes_exp" },
+
+               { "op": "from_bytes", "bytes": "%raw", "type": "Scalar<Jubjub>", "output": "%raw_scalar" },
+               { "op": "private_input", "type": "Scalar<Jubjub>", "guard": null, "output": "%raw_scalar_exp" },
+               { "op": "constrain_eq", "a": "%raw_scalar", "b": "%raw_scalar_exp" },
+
+               { "op": "load_constant", "type": "Scalar<Jubjub>", "encoding": ["0x07"], "output": "%c" },
+               { "op": "to_bytes", "input": "%c", "output": "%c_bytes" },
+               { "op": "private_input", "type": "Bytes<32>", "guard": null, "output": "%c_bytes_exp" },
+               { "op": "constrain_eq", "a": "%c_bytes", "b": "%c_bytes_exp" }
+           ]
+        }"#;
+        let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
+
+        let scalar_val = JubjubFr::random(OsRng);
+        let raw_bytes = [0xffu8; 32];
+
+        let encode = |v: IrValue| -> Vec<transient_crypto::curve::Fr> {
+            encode_offcircuit(&v)
+                .into_iter()
+                .map(|x| x.try_into().unwrap())
+                .collect()
+        };
+
+        let inputs: Vec<transient_crypto::curve::Fr> = [
+            encode(IrValue::JubjubScalar(scalar_val)),
+            encode(IrValue::Bytes(raw_bytes.to_vec())),
+        ]
+        .concat();
+
+        let scalar_bytes_exp = to_bytes_offcircuit(&IrValue::JubjubScalar(scalar_val)).unwrap();
+        let raw_scalar_exp = from_bytes_offcircuit(&IrType::JubjubScalar, &raw_bytes).unwrap();
+        // A small constant is assigned from a short bit vector, so its byte
+        // encoding exercises the zero-padding path of `to_bytes`.
+        let const_bytes_exp =
+            to_bytes_offcircuit(&IrValue::JubjubScalar(JubjubFr::from(7))).unwrap();
+
+        let private_transcript: Vec<transient_crypto::curve::Fr> = [
+            encode(scalar_bytes_exp),
+            encode(raw_scalar_exp),
+            encode(const_bytes_exp),
+        ]
+        .concat();
+
+        let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
+        let preimage = ProofPreimage {
+            binding_input: 42.into(),
+            communications_commitment: None,
+            inputs,
+            private_transcript,
             public_transcript_inputs: vec![],
             public_transcript_outputs: vec![],
             key_location: KeyLocation(Cow::Borrowed("builtin")),
@@ -1519,81 +1618,111 @@ mod proof_tests {
     }
 
     #[actix_rt::test]
-    async fn test_bytes32_low_high_proof() {
-        // Exercises bytes32_into_low_high / bytes32_from_low_high:
-        //   1. Splits a Bytes32 into its low (first 31 bytes) and high (byte 31) native
-        //      field elements and checks each against the off-circuit reference.
-        //   2. Reconstructs the original Bytes32 via bytes32_from_low_high and checks
-        //      equality with the original value, exercising the full roundtrip.
+    async fn test_bytes_natives_proof() {
+        // Exercises bytes_into_natives / bytes_from_natives at lengths below, at,
+        // and on either side of the 31-byte limb boundary:
+        //   1. Packs a Bytes(n) into ceil(n / 31) native field elements and checks
+        //      every limb against the off-circuit reference.
+        //   2. Unpacks the limbs with bytes_from_natives and checks equality with
+        //      the original value, exercising the full roundtrip.
         use midnight_zkir::ir_instructions::from_bytes::from_bytes_offcircuit;
         use midnight_zkir::ir_types::IrType;
 
-        let ir_raw = r#"{
-           "version": { "major": 3, "minor": 0 },
-           "inputs": [
-              { "name": "%b", "type": "Bytes<32>" }
-           ],
-           "outputs": [],
-           "do_communications_commitment": false,
-           "instructions": [
-               { "op": "bytes32_into_low_high", "bytes": "%b", "outputs": ["%lo", "%hi"] },
-               { "op": "bytes32_from_low_high", "inputs": ["%lo", "%hi"], "output": "%b_back" },
-               { "op": "constrain_eq", "a": "%b_back", "b": "%b" },
-               { "op": "private_input", "type": "Scalar<BLS12-381>", "guard": null, "output": "%lo_exp" },
-               { "op": "private_input", "type": "Scalar<BLS12-381>", "guard": null, "output": "%hi_exp" },
-               { "op": "constrain_eq", "a": "%lo", "b": "%lo_exp" },
-               { "op": "constrain_eq", "a": "%hi", "b": "%hi_exp" }
-           ]
-        }"#;
-        let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
+        const BYTES_PER_LIMB: usize = 31;
 
-        // bytes with a non-zero MSB (byte 31 == 32) to exercise the high part.
-        let bytes: [u8; 32] = std::array::from_fn(|i| (i + 1) as u8);
+        for n in [1usize, BYTES_PER_LIMB, 32, 33, 70] {
+            let nb_limbs = n.div_ceil(BYTES_PER_LIMB);
+            let limbs: Vec<String> = (0..nb_limbs).map(|i| format!("%l{i}")).collect();
+            let limb_list = limbs
+                .iter()
+                .map(|l| format!("\"{l}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
 
-        let encode = |v: IrValue| -> Vec<transient_crypto::curve::Fr> {
-            encode_offcircuit(&v)
-                .into_iter()
-                .map(|x| x.try_into().unwrap())
-                .collect()
-        };
+            let mut instructions = vec![
+                format!(
+                    r#"{{ "op": "bytes_into_natives", "bytes": "%b", "outputs": [{limb_list}] }}"#
+                ),
+                format!(
+                    r#"{{ "op": "bytes_from_natives", "inputs": [{limb_list}], "len": {n}, "output": "%b_back" }}"#
+                ),
+                r#"{ "op": "constrain_eq", "a": "%b_back", "b": "%b" }"#.to_string(),
+            ];
+            for l in limbs.iter() {
+                instructions.push(format!(
+                    r#"{{ "op": "private_input", "type": "Scalar<BLS12-381>", "guard": null, "output": "{l}_exp" }}"#
+                ));
+            }
+            for l in limbs.iter() {
+                instructions.push(format!(
+                    r#"{{ "op": "constrain_eq", "a": "{l}", "b": "{l}_exp" }}"#
+                ));
+            }
 
-        let inputs: Vec<transient_crypto::curve::Fr> = encode(IrValue::Bytes(bytes.to_vec()));
+            let ir_raw = format!(
+                r#"{{
+                   "version": {{ "major": 3, "minor": 0 }},
+                   "inputs": [
+                      {{ "name": "%b", "type": "Bytes<{n}>" }}
+                   ],
+                   "outputs": [],
+                   "do_communications_commitment": false,
+                   "instructions": [{}]
+                }}"#,
+                instructions.join(",\n")
+            );
+            let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
 
-        // Compute expected lo and hi using the same logic as the off-circuit VM.
-        let mut lo_bytes = bytes;
-        lo_bytes[31] = 0;
-        let lo_exp = from_bytes_offcircuit(&IrType::Native, &lo_bytes).unwrap();
-        let mut hi_bytes = [0u8; 32];
-        hi_bytes[0] = bytes[31];
-        let hi_exp = from_bytes_offcircuit(&IrType::Native, &hi_bytes).unwrap();
+            // Bytes chosen so that the last byte of every limb is non-zero, which
+            // exercises the most significant byte of each field element.
+            let bytes: Vec<u8> = (0..n).map(|i| (i + 1) as u8).collect();
 
-        let private_transcript: Vec<transient_crypto::curve::Fr> =
-            [encode(lo_exp), encode(hi_exp)].concat();
+            let encode = |v: IrValue| -> Vec<transient_crypto::curve::Fr> {
+                encode_offcircuit(&v)
+                    .into_iter()
+                    .map(|x| x.try_into().unwrap())
+                    .collect()
+            };
 
-        let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
-        let preimage = ProofPreimage {
-            binding_input: 42.into(),
-            communications_commitment: None,
-            inputs,
-            private_transcript,
-            public_transcript_inputs: vec![],
-            public_transcript_outputs: vec![],
-            key_location: KeyLocation(Cow::Borrowed("builtin")),
-        };
-        let (proof, _) = preimage
-            .prove::<IrSource>(
-                &mut ChaCha20Rng::from_seed([42; 32]),
-                &TestParams,
-                &TestResolver {
-                    pk: pk.clone(),
-                    vk: vk.clone(),
-                    ir: ir.clone(),
-                },
-            )
-            .await
-            .unwrap();
-        vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
-            .unwrap();
+            let inputs: Vec<transient_crypto::curve::Fr> = encode(IrValue::Bytes(bytes.clone()));
+
+            // Compute the expected limbs independently of the packing under test:
+            // every chunk of (at most) 31 bytes, zero-padded to 32, read as a
+            // little-endian native field element.
+            let private_transcript: Vec<transient_crypto::curve::Fr> = bytes
+                .chunks(BYTES_PER_LIMB)
+                .flat_map(|chunk| {
+                    let mut buf = [0u8; 32];
+                    buf[..chunk.len()].copy_from_slice(chunk);
+                    encode(from_bytes_offcircuit(&IrType::Native, &buf).unwrap())
+                })
+                .collect();
+
+            let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
+            let preimage = ProofPreimage {
+                binding_input: 42.into(),
+                communications_commitment: None,
+                inputs,
+                private_transcript,
+                public_transcript_inputs: vec![],
+                public_transcript_outputs: vec![],
+                key_location: KeyLocation(Cow::Borrowed("builtin")),
+            };
+            let (proof, _) = preimage
+                .prove::<IrSource>(
+                    &mut ChaCha20Rng::from_seed([42; 32]),
+                    &TestParams,
+                    &TestResolver {
+                        pk: pk.clone(),
+                        vk: vk.clone(),
+                        ir: ir.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
+                .unwrap();
+        }
     }
 
     #[actix_rt::test]
@@ -2377,6 +2506,119 @@ mod proof_tests {
             .unwrap();
         vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
             .unwrap();
+    }
+
+    // Runs `EcMulGenerator -> ToBytes -> FromBytes` on `scalar` in-circuit,
+    // checking the compressed bytes against the off-circuit `ToBytes` and the
+    // decoded point against the original one. Returns the compressed bytes.
+    async fn point_bytes_roundtrip_proof(curve: &str, scalar: IrValue) -> Vec<u8> {
+        use midnight_zkir::ir_instructions::to_bytes::to_bytes_offcircuit;
+
+        let p = match &scalar {
+            IrValue::Secp256k1Scalar(s) => IrValue::Secp256k1Point(k256::K256::generator() * s),
+            IrValue::Secp256r1Scalar(s) => IrValue::Secp256r1Point(p256::P256::generator() * s),
+            IrValue::Curve25519Scalar(s) => {
+                IrValue::Curve25519Point(curve25519::Curve25519Subgroup::generator() * s)
+            }
+            IrValue::JubjubScalar(s) => IrValue::JubjubPoint(JubjubSubgroup::generator() * s),
+            _ => unreachable!(),
+        };
+        let compressed: Vec<u8> = to_bytes_offcircuit(&p).unwrap().try_into().unwrap();
+
+        let ir_raw = format!(
+            r#"{{
+           "version": {{ "major": 3, "minor": 0 }},
+           "inputs": [
+              {{ "name": "%s", "type": "Scalar<{curve}>" }}
+           ],
+           "outputs": [],
+           "do_communications_commitment": false,
+           "instructions": [
+               {{ "op": "ec_mul_generator", "scalar": "%s", "output": "%p" }},
+               {{ "op": "to_bytes", "input": "%p", "output": "%c" }},
+               {{ "op": "private_input", "type": "Bytes<{n}>", "guard": null, "output": "%c_exp" }},
+               {{ "op": "constrain_eq", "a": "%c", "b": "%c_exp" }},
+               {{ "op": "from_bytes", "bytes": "%c", "type": "Point<{curve}>", "output": "%q" }},
+               {{ "op": "constrain_eq", "a": "%q", "b": "%p" }}
+           ]
+        }}"#,
+            n = compressed.len()
+        );
+        let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
+
+        let encode = |v: IrValue| -> Vec<transient_crypto::curve::Fr> {
+            encode_offcircuit(&v)
+                .into_iter()
+                .map(|x| x.try_into().unwrap())
+                .collect()
+        };
+
+        let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
+        let preimage = ProofPreimage {
+            binding_input: 42.into(),
+            communications_commitment: None,
+            inputs: encode(scalar),
+            private_transcript: encode(IrValue::Bytes(compressed.clone())),
+            public_transcript_inputs: vec![],
+            public_transcript_outputs: vec![],
+            key_location: KeyLocation(Cow::Borrowed("builtin")),
+        };
+        let (proof, _) = preimage
+            .prove::<IrSource>(
+                &mut ChaCha20Rng::from_seed([42; 32]),
+                &TestParams,
+                &TestResolver {
+                    pk: pk.clone(),
+                    vk: vk.clone(),
+                    ir: ir.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
+            .unwrap();
+
+        compressed
+    }
+
+    #[actix_rt::test]
+    async fn test_curve25519_point_bytes_proof() {
+        let s = <curve25519::Scalar as Field>::random(OsRng);
+        point_bytes_roundtrip_proof("Curve25519", IrValue::Curve25519Scalar(s)).await;
+    }
+
+    #[actix_rt::test]
+    async fn test_jubjub_point_bytes_proof() {
+        let s = JubjubFr::random(OsRng);
+        point_bytes_roundtrip_proof("Jubjub", IrValue::JubjubScalar(s)).await;
+
+        let s = JubjubFr::ZERO;
+        let c = point_bytes_roundtrip_proof("Jubjub", IrValue::JubjubScalar(s)).await;
+        let mut expected = vec![0u8; 32];
+        expected[0] = 1;
+        assert_eq!(c, expected);
+    }
+
+    #[actix_rt::test]
+    async fn test_secp256k1_point_bytes_proof() {
+        let s = k256::Fq::random(OsRng);
+        point_bytes_roundtrip_proof("Secp256k1", IrValue::Secp256k1Scalar(s)).await;
+
+        // The identity has unconstrained coordinates in-circuit.
+        let s = k256::Fq::ZERO;
+        let c = point_bytes_roundtrip_proof("Secp256k1", IrValue::Secp256k1Scalar(s)).await;
+        assert_eq!(c, vec![0u8; 33]);
+    }
+
+    #[actix_rt::test]
+    async fn test_secp256r1_point_bytes_proof() {
+        let s = p256::Fq::random(OsRng);
+        point_bytes_roundtrip_proof("Secp256r1", IrValue::Secp256r1Scalar(s)).await;
+
+        // The identity has unconstrained coordinates in-circuit.
+        let s = p256::Fq::ZERO;
+        let c = point_bytes_roundtrip_proof("Secp256r1", IrValue::Secp256r1Scalar(s)).await;
+        assert_eq!(c, vec![0u8; 33]);
     }
 
     #[actix_rt::test]

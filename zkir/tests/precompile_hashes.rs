@@ -99,10 +99,26 @@ fn read_pinned_hex(pin_path: &Path) -> std::io::Result<String> {
 
 #[actix_rt::test]
 async fn precompile_key_hashes_pinned() {
-    let update = std::env::var_os(UPDATE_ENV).is_some();
-    let root = precompiles_root();
-    let files = enumerate_zkir(&root);
+    check_key_pins(&precompiles_root(), std::env::var_os(UPDATE_ENV).is_some()).await;
+}
+
+/// The frozen ZKIR 3.0 baseline: files, `.bzkir`s and a `keys.sha256`
+/// manifest produced by the 3.0.0-rc.2 release binary, covering every 3.0
+/// instruction and type. Old files must keygen to the exact keys the release
+/// produced. These pins are never refreshed.
+#[actix_rt::test]
+async fn frozen_v3_0_key_hashes_pinned() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compat_fixtures/v3.0");
+    check_key_pins(&root, false).await;
+}
+
+async fn check_key_pins(root: &Path, update: bool) {
+    let files = enumerate_zkir(root);
     assert!(!files.is_empty(), "no .zkir files found under {root:?}");
+
+    // A directory may pin all its keys in one `keys.sha256` manifest
+    // (`sha256sum` format) instead of per-file `.sha256` pins.
+    let manifest = fs::read_to_string(root.join("keys.sha256")).ok();
 
     let mut mismatches: Vec<String> = Vec::new();
     let mut checked = 0usize;
@@ -146,7 +162,18 @@ async fn precompile_key_hashes_pinned() {
             (&vk_label, &vk_bytes, &vk_pin),
         ] {
             let actual = hex_digest(bytes);
-            let expected = match read_pinned_hex(pin_path) {
+            let pinned = match &manifest {
+                Some(m) => m
+                    .lines()
+                    .find_map(|l| {
+                        let mut it = l.split_whitespace();
+                        let hash = it.next()?;
+                        (it.next()? == label.as_str()).then(|| hash.to_string())
+                    })
+                    .ok_or_else(|| std::io::Error::other("not listed in keys.sha256")),
+                None => read_pinned_hex(pin_path),
+            };
+            let expected = match pinned {
                 Ok(s) => s,
                 Err(e) => {
                     mismatches.push(format!(

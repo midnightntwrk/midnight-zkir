@@ -100,7 +100,12 @@ fn load(path: &Path) -> IrSource {
 #[test]
 fn golden_fixtures_pinned() {
     let update = std::env::var_os(UPDATE_ENV).is_some();
-    let files = enumerate_by_extension(&fixtures_dir(), "zkir");
+    // Top-level fixtures only: subdirectories hold frozen release baselines
+    // (e.g. `v3.0/`), produced by the release binary and never refreshed.
+    let files: Vec<_> = enumerate_by_extension(&fixtures_dir(), "zkir")
+        .into_iter()
+        .filter(|p| p.parent() == Some(fixtures_dir().as_path()))
+        .collect();
     assert!(!files.is_empty(), "no .zkir fixtures found");
 
     for zkir_path in &files {
@@ -173,14 +178,25 @@ fn corpus_stays_readable() {
         let ir: IrSource = tagged_deserialize(Cursor::new(&bytes)).unwrap_or_else(|e| {
             panic!("binary IR {bzkir_path:?} no longer deserializes: {e}")
         });
+        // Decoding alone is not enough: a misaligned layout can decode into a
+        // different, valid IR. Require a JSON twin and an exact round trip.
         let zkir_path = bzkir_path.with_extension("zkir");
-        if zkir_path.is_file() && json_major(&zkir_path) == 3 {
-            assert_eq!(
-                ir,
-                load(&zkir_path),
-                "{bzkir_path:?} and {zkir_path:?} decode to different IRs"
-            );
-        }
+        assert!(
+            zkir_path.is_file() && json_major(&zkir_path) == 3,
+            "{bzkir_path:?} has no v3 JSON twin {zkir_path:?}"
+        );
+        assert_eq!(
+            ir,
+            load(&zkir_path),
+            "{bzkir_path:?} and {zkir_path:?} decode to different IRs"
+        );
+        let mut round = Vec::new();
+        tagged_serialize(&ir, &mut round)
+            .unwrap_or_else(|e| panic!("serialize {bzkir_path:?}: {e}"));
+        assert!(
+            round == bytes,
+            "{bzkir_path:?} does not round-trip byte-exactly"
+        );
         checked += 1;
     }
 

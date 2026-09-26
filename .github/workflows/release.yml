@@ -1,0 +1,332 @@
+name: Publish ZKIR Release
+
+# ZKIR-only release pipeline, modeled on midnight-ledger's "Publish Ledger
+# Release" workflow. Trigger manually from the branch to release:
+#
+#   1. `build` derives the release identifiers, builds the wasm npm tarball,
+#      and pushes the `zkir-<version>` git tag (the tag tracks the `zkir`
+#      crate version; the published npm package uses the `zkir-wasm` version,
+#      matching the ledger convention).
+#   2. `unit-tests` re-runs the full suite at the released commit.
+#   3. `publish-npm` publishes the tarball to GitHub Packages and npmjs under
+#      both scopes (@midnight-ntwrk legacy, @midnightntwrk migration target).
+#      Skipped gracefully, with a warning, while the registry tokens are not
+#      configured as repo secrets.
+#   4. `release` creates (or refreshes) the GitHub Release with the tarball,
+#      test results, and SHA256SUMS. Versions containing -rc/-alpha/-beta are
+#      marked as pre-releases and get auto-generated notes.
+#
+# There is no crates.io job: every crate in this workspace is `publish = false`;
+# consumers pull the Rust crates via git tag + cargo `[patch]`, which is what
+# the pushed tag serves.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force a rebuild/republish even when the npm version already exists on the registries."
+        type: boolean
+        default: false
+      dry_run:
+        description: "Dry run: build, test and assemble artifacts but skip every irreversible action (tag push, npm publish, GitHub Release)."
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  DRY_RUN: ${{ github.event.inputs.dry_run }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Real publishes require approval from a reviewer on the protected
+    # `release` environment (configure required reviewers in repo Settings ->
+    # Environments). Dry runs need no approval. The build job is the gate
+    # because the tag push happens here, before anything downstream.
+    # NB: the truthy value must be the && arm - '' is falsy in GitHub
+    # expressions, so `cond && '' || x` yields x on BOTH branches.
+    environment: ${{ github.event.inputs.dry_run != 'true' && 'release' || '' }}
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.ids.outputs.tag_name }}
+      version: ${{ steps.ids.outputs.version }}
+      wasm_version: ${{ steps.ids.outputs.wasm_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+            extra-substituters = https://cache.iog.io file://${{ runner.temp }}/nix-binary-cache
+            accept-flake-config = true
+
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+
+      - name: Configure cargo
+        run: .github/scripts/configure-cargo.sh
+
+      - name: Compute release identifiers
+        id: ids
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version = ' zkir/Cargo.toml | awk -F'"' '{print $2}')
+          WASM_VERSION=$(grep -m1 '^version = ' zkir-wasm/Cargo.toml | awk -F'"' '{print $2}')
+          [ -n "$VERSION" ] || { echo "::error::could not read zkir crate version"; exit 1; }
+          [ -n "$WASM_VERSION" ] || { echo "::error::could not read zkir-wasm crate version"; exit 1; }
+          echo "zkir: ${VERSION}, zkir-wasm: ${WASM_VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "wasm_version=${WASM_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=zkir-${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build zkir
+        run: nix build .#zkir
+
+      - name: Build zkir-wasm npm tarball
+        env:
+          WASM_VERSION: ${{ steps.ids.outputs.wasm_version }}
+        run: |
+          set -euo pipefail
+          nix build .#zkir-wasm
+          mkdir -p release-artifacts
+          TGZ="result/lib/midnight-zkir-v3-${WASM_VERSION}.tgz"
+          [ -f "$TGZ" ] || { echo "::error::expected tarball not found: $TGZ"; ls -lah result/lib; exit 1; }
+          cp "$TGZ" release-artifacts/
+
+      - name: Push release tag
+        env:
+          TAG_NAME: ${{ steps.ids.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --tags origin | grep -qE "refs/tags/${TAG_NAME}(\^\{\})?$"; then
+            echo "Tag ${TAG_NAME} already exists on remote - skipping tagging."
+          elif [ "${DRY_RUN}" = "true" ]; then
+            echo "[dry-run] would tag and push ${TAG_NAME}"
+          else
+            git config user.name 'MidnightCI'
+            git config user.email 'midnight-automation+midnightci@iohk.io'
+            git tag "${TAG_NAME}"
+            git push origin "${TAG_NAME}"
+          fi
+
+      - name: Upload npm package tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: npm-packages
+          path: release-artifacts/*.tgz
+          if-no-files-found: error
+
+  unit-tests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+            extra-substituters = https://cache.iog.io file://${{ runner.temp }}/nix-binary-cache
+            accept-flake-config = true
+
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+
+      - name: Configure cargo
+        run: .github/scripts/configure-cargo.sh
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Build and Test (default features)
+        run: nix develop -c cargo nextest run --release --profile ci
+
+      - name: Upload unit test results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: unit-test-results
+          path: target/nextest/ci/test-results.xml
+
+  # Publishes @midnight-ntwrk/zkir-v3 (legacy scope) and @midnightntwrk/zkir-v3
+  # (migration target) to GitHub Packages and npmjs, mirroring
+  # midnight-ledger's publish.yml. The built tarball's own scope is never
+  # trusted: it is normalized to each target scope before publishing.
+  # Idempotent: already-published versions are skipped unless `force`.
+  #
+  # Requires repo secrets:
+  #   MIDNIGHTCI_PACKAGES_WRITE - GH Packages write token
+  #   NPMJS_PUBLISH_TOKEN       - npmjs publish token
+  # While a token is missing its registry is skipped with a warning, so tag +
+  # GitHub Release still work before npm credentials are set up.
+  publish-npm:
+    needs: [ build, unit-tests ]
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      WASM_VERSION: ${{ needs.build.outputs.wasm_version }}
+      FORCE: ${{ github.event.inputs.force }}
+      GH_PACKAGES_TOKEN: ${{ secrets.MIDNIGHTCI_PACKAGES_WRITE }}
+      NPMJS_TOKEN: ${{ secrets.NPMJS_PUBLISH_TOKEN }}
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Download npm package tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-packages
+          path: npm-packages
+
+      - name: Publish to registries
+        run: |
+          set -euo pipefail
+          TGZ="npm-packages/midnight-zkir-v3-${WASM_VERSION}.tgz"
+          [ -f "$TGZ" ] || { echo "::error::tarball not found: $TGZ"; exit 1; }
+
+          # Normalize the tarball to a target scope: repack with package.json's
+          # `name` rewritten to <scope>/zkir-v3.
+          rescope() { # rescope <scope> -> echoes rescoped tarball path
+            local scope="$1" dir out
+            dir=$(mktemp -d)
+            tar -xzf "$TGZ" -C "$dir"
+            node -e '
+              const fs = require("fs");
+              const p = process.argv[1] + "/package/package.json";
+              const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
+              pkg.name = process.argv[2] + "/" + pkg.name.split("/").pop();
+              fs.writeFileSync(p, JSON.stringify(pkg, null, 2));
+            ' "$dir" "$scope"
+            out="$dir/rescoped.tgz"
+            tar -czf "$out" -C "$dir" package
+            echo "$out"
+          }
+
+          publish() { # publish <registry-url> <token> <scope>
+            local reg="$1" token="$2" scope="$3" pkg="${3}/zkir-v3" host npmrc rescoped
+            if [ -z "$token" ]; then
+              echo "::warning::no token configured for ${reg} - skipping ${pkg}@${WASM_VERSION}"
+              return 0
+            fi
+            # Scoped packages resolve their registry via .npmrc, not --registry,
+            # so write a throwaway userconfig with the scope mapping + auth.
+            host="${reg#https://}"; host="${host%/}"
+            npmrc=$(mktemp)
+            printf '%s:registry=%s\n//%s/:_authToken=%s\n' "$scope" "$reg" "$host" "$token" > "$npmrc"
+            if [ "${FORCE:-false}" != "true" ] \
+               && NPM_CONFIG_USERCONFIG="$npmrc" npm view "${pkg}@${WASM_VERSION}" version >/dev/null 2>&1; then
+              echo "${pkg}@${WASM_VERSION} already on ${reg} - skipping."
+              rm -f "$npmrc"
+              return 0
+            fi
+            rescoped=$(rescope "$scope")
+            NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$rescoped" --access public
+            rm -f "$npmrc"
+            echo "published ${pkg}@${WASM_VERSION} to ${reg}"
+          }
+
+          for SCOPE in @midnight-ntwrk @midnightntwrk; do
+            publish "https://npm.pkg.github.com" "$GH_PACKAGES_TOKEN" "$SCOPE"
+            publish "https://registry.npmjs.org" "$NPMJS_TOKEN"       "$SCOPE"
+          done
+
+  release:
+    # publish-npm is skipped on dry runs; `!cancelled() &&` (a status function,
+    # so it bypasses the implicit success() check) keeps release eligible then,
+    # while real runs still hard-require the npm job's success.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.unit-tests.result == 'success' && (needs.publish-npm.result == 'success' || (github.event.inputs.dry_run == 'true' && needs.publish-npm.result == 'skipped')) }}
+    needs: [ build, unit-tests, publish-npm ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG_NAME: ${{ needs.build.outputs.tag_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: downloaded-artifacts
+
+      - name: Assemble release assets and checksums
+        id: assets
+        run: |
+          set -euo pipefail
+          STAGING="release-assets"
+          mkdir -p "$STAGING"
+          # nullglob so an absent optional artifact skips cleanly.
+          shopt -s nullglob
+          for f in downloaded-artifacts/npm-packages/*.tgz; do cp "$f" "$STAGING/"; done
+          for f in downloaded-artifacts/unit-test-results/test-results.*; do cp "$f" "$STAGING/"; done
+          # Guard: `sha256sum *` would block on stdin if STAGING were empty.
+          if [ -n "$(ls -A "$STAGING")" ]; then
+            ( cd "$STAGING" && sha256sum -- * > SHA256SUMS )
+          else
+            echo "::warning::No release assets were assembled."
+          fi
+          ls -lah "$STAGING"
+          echo "staging=$STAGING" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          STAGING="${{ steps.assets.outputs.staging }}"
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "[dry-run] would create/update release ${TAG_NAME} (title: ZKIR ${VERSION}) with assets:"
+            ls -1 "${STAGING}"
+            exit 0
+          fi
+
+          NOTES_FILE="${GITHUB_WORKSPACE}/.github/release-notes/${TAG_NAME}.md"
+
+          IS_PRERELEASE=false
+          case "${VERSION}" in
+            *-rc*|*-alpha*|*-beta*) IS_PRERELEASE=true ;;
+          esac
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} exists - refreshing assets."
+            gh release upload "${TAG_NAME}" "${STAGING}"/* --clobber
+          elif [ "${IS_PRERELEASE}" = "true" ]; then
+            # Pre-releases always use auto-generated notes.
+            gh release create "${TAG_NAME}" --title "ZKIR ${VERSION}" \
+              --generate-notes --prerelease "${STAGING}"/*
+          elif [ -f "${NOTES_FILE}" ]; then
+            # Curated notes, scaffolded by the Prepare workflow and written in
+            # the release PR.
+            gh release create "${TAG_NAME}" --title "ZKIR ${VERSION}" \
+              --notes-file "${NOTES_FILE}" "${STAGING}"/*
+          else
+            echo "::warning::No release notes at .github/release-notes/${TAG_NAME}.md - creating release with auto-generated notes. Add the file before release to use curated notes."
+            gh release create "${TAG_NAME}" --title "ZKIR ${VERSION}" \
+              --generate-notes "${STAGING}"/*
+          fi

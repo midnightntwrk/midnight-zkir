@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-transient-crypto = { version = "3.0.0", package = "midnight-transient-crypto" }
+transient-crypto = { version = "4.0.0", package = "midnight-transient-crypto" }
 zkir = { path = "../zkir", package = "midnight-zkir" }
 serialize = { version = "1.0.0", package = "midnight-serialize" }
 

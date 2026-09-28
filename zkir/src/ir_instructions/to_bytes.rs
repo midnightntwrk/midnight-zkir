@@ -46,8 +46,8 @@ use crate::{
 /// `to_bytes . from_bytes` is the identity up to zero-padding to 32 bytes.
 ///
 /// Points are encoded in compressed form:
-///  - `JubjubPoint` -> `Bytes(32)`, the little-endian `y` coordinate, 
-///    with the least significant bit of `x` in the most significant bit 
+///  - `JubjubPoint` -> `Bytes(32)`, the little-endian `y` coordinate,
+///    with the least significant bit of `x` in the most significant bit
 ///    of the last byte
 ///  - `Secp256k1Point`, `Secp256r1Point` -> `Bytes(33)`, SEC1 compressed
 ///    encoding, with the identity encoded as 33 zero bytes
@@ -253,11 +253,8 @@ where
     x_bytes.reverse();
     let y_sign = base_field_chip.sgn0(layouter, y)?;
 
-    let prefix = std_lib.linear_combination(
-        layouter,
-        &[(F::from(1), y_sign.into())],
-        F::from(2),
-    )?;
+    let prefix =
+        std_lib.linear_combination(layouter, &[(F::from(1), y_sign.into())], F::from(2))?;
     let prefix: AssignedByte<F> = std_lib.convert(layouter, &prefix)?;
 
     let zero: AssignedByte<F> = std_lib.assign_fixed(layouter, 0u8)?;

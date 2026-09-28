@@ -30,3 +30,4 @@ pub mod mul;
 pub mod neg;
 pub mod select;
 pub mod to_bytes;
+pub mod verify_proof;

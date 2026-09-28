@@ -102,11 +102,16 @@ fn one_proof_witness_per_instruction_whatever_the_guard() {
     ir.check(&preimage(vec![blank(), blank()]))
         .expect("two instructions, two witnesses");
 
-    assert!(ir.check(&preimage(vec![blank()])).is_err(), "too few");
+    let msg = rejection([pair("%p_0"), pair("%p_1")].concat(), 1);
     assert!(
-        ir.check(&preimage(vec![blank(), blank(), blank()]))
-            .is_err(),
-        "too many"
+        msg.contains("Not enough proof witnesses: ran out at index 1"),
+        "too few must name the binding that ran out, got: {msg}"
+    );
+
+    let msg = rejection([pair("%p_0"), pair("%p_1")].concat(), 3);
+    assert!(
+        msg.contains("Expected 2 proof witnesses (one per InnerProof), received 3"),
+        "too many must be refused on the count, got: {msg}"
     );
 }
 
@@ -118,6 +123,18 @@ fn a_verify_proof_must_name_a_proof_bound_before_it() {
     // Binding it later does not help: both passes resolve in instruction order.
     let msg = rejection(vec![verify("%p_0", "0x00"), inner("%p_0", "0x00")], 1);
     assert!(msg.contains("no preceding `inner_proof` binds"), "{msg}");
+}
+
+#[test]
+fn a_proof_name_is_bound_only_once() {
+    // A second binding would shadow the first.
+    let rebound = vec![
+        inner("%p_0", "0x00"),
+        inner("%p_0", "0x00"),
+        verify("%p_0", "0x00"),
+    ];
+    let msg = rejection(rebound, 2);
+    assert!(msg.contains("`inner_proof` rebinds %p_0"), "{msg}");
 }
 
 #[test]

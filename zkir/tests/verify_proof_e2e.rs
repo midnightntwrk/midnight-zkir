@@ -15,17 +15,18 @@
 //! `verify_proof.rs`.
 //!
 //! Most follow the same shape: prove an inner circuit with a Poseidon
-//! transcript, register its verifying key under a decider, then build an
-//! outer ZKIR circuit that binds the proof with `inner_proof`, and verifies it
-//! with `verify_proof`. Verifying the outer proof runs the pairing check on the
-//! accumulator the instruction exposed.
+//! transcript, register its verifying key, then build an outer ZKIR circuit
+//! that binds the proof with `inner_proof`, verifies it with `verify_proof`,
+//! and exposes the resulting accumulator with `verify_accumulator`. Verifying
+//! the outer proof runs the pairing check on the exposed accumulator.
 //!
 //!   * [`SingleScalarRelation`](verify_proof_common::SingleScalarRelation) and
-//!     [`RsaSignatureRelation`] defer nothing: [`DeciderKind::None`].
+//!     [`RsaSignatureRelation`] defer nothing.
 //!   * [`RecursiveRelation`] verifies a
 //!     [`SingleScalarRelation`](verify_proof_common::SingleScalarRelation) proof
-//!     in-circuit, so it carries the accumulator that verification defers:
-//!     [`DeciderKind::Collapsed`].
+//!     in-circuit, so it carries the accumulator that verification defers in
+//!     its instance tail. The outer circuit witnesses it with `private_input`,
+//!     ties it to that tail, and aggregates it into its own.
 //!
 //! Tests that build an outer circuit are `#[ignore]`d for runtime alone: they
 //! prove circuits of k=18 and above, which takes minutes. They pass, and
@@ -58,13 +59,12 @@ use midnight_proofs::circuit::{Layouter, Value};
 use midnight_proofs::plonk;
 use midnight_proofs::poly::kzg::KZGCommitmentScheme;
 use midnight_proofs::transcript::{CircuitTranscript, Hashable, Sampleable, Transcript};
+use midnight_proofs::utils::SerdeFormat;
 use midnight_zk_stdlib::{
     MidnightPK, MidnightVK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
 };
 use midnight_zkir::IrSource;
-use midnight_zkir::decider::{
-    DeciderKind, accumulator_pis, deserialize_vk, serialize_vk, trivial_accumulator_pis,
-};
+use midnight_zkir::ir_instructions::aggregate::trivial_accumulator;
 use midnight_zkir::ir_instructions::verify_proof::{
     verify_proof_incircuit, verify_proof_offcircuit,
 };
@@ -87,7 +87,7 @@ use crate::verify_proof_common::{
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Statements for `collapsed_decider_catches_a_bad_carried_accumulator`.
+/// Statements for `a_bad_carried_accumulator_is_rejected`.
 const GOOD: u64 = 123;
 
 const BOGUS: u64 = 456;
@@ -151,10 +151,9 @@ async fn accumulator_is_carried_on_the_proof_not_the_statement() {
         "the statement is the binding input alone; the accumulator is not in it"
     );
 
-    let expected = accumulator_pis(
-        &verify_proof_offcircuit(&fixture.vk_blob, &inner_pis, &inner_proof, true)
-            .expect("off-circuit preparation"),
-    );
+    let expected = verify_proof_offcircuit(&fixture.vk_blob, &inner_pis, &inner_proof, true)
+        .expect("off-circuit preparation")
+        .as_public_input();
     assert_eq!(
         expected.len(),
         acc_len,
@@ -215,16 +214,16 @@ async fn blake2b_transcript_proof_is_rejected() {
     );
 }
 
-/// A `Collapsed` decider checks the accumulator the inner proof carries, not
-/// just the one from verifying it.
+/// Aggregating the accumulator the inner proof carries checks it, not just the
+/// one from verifying it.
 ///
 /// The recursive proof carries an accumulator for a proof of `BOGUS` checked
-/// against `GOOD`. Everything is well-formed, so only the pairing on the folded
-/// accumulator can reject it. The same proof under `None`, which ignores the
-/// carried accumulator, is accepted.
+/// against `GOOD`. Everything is well-formed, so only the pairing on the
+/// aggregated accumulator can reject it. The same proof, with the carried
+/// accumulator ignored, is accepted.
 #[actix_rt::test]
 #[ignore = "slow: two levels of in-circuit verification"]
-async fn collapsed_decider_catches_a_bad_carried_accumulator() {
+async fn a_bad_carried_accumulator_is_rejected() {
     let mut rng = test_rng();
 
     let inner = scalar_inner_proofs(&[GOOD, BOGUS], &mut rng).await;
@@ -245,17 +244,22 @@ async fn collapsed_decider_catches_a_bad_carried_accumulator() {
         .pis
         .iter()
         .copied()
-        .chain(accumulator_pis(&deferred_bad))
+        .chain(deferred_bad.as_public_input())
         .collect();
     let (recursive_proof, recursive_vk) =
         prove_recursive(&relation, &instance, bogus.proof.clone(), &mut rng).await;
 
-    let collapsed = serialize_vk(&recursive_vk, DeciderKind::Collapsed).expect("collapsed blob");
-    let ir = outer_ir_for(&collapsed, &instance);
-    let (pk, vk) = outer_keygen(&ir, "collapsed decider, bad carried accumulator").await;
+    let mut blob = Vec::new();
+    recursive_vk
+        .write(&mut blob, SerdeFormat::Processed)
+        .expect("recursive blob");
+    let ir = outer_ir_for_all(&[(blob.clone(), instance.clone())], true);
+    let (pk, vk) = outer_keygen(&ir, "bad carried accumulator").await;
 
-    let (outer_proof, pis) =
-        outer_prove(&ir, pk, &outer_preimage(recursive_proof.clone()), &mut rng).await;
+    // The carried accumulator is witnessed from the private transcript.
+    let mut preimage = outer_preimage(recursive_proof.clone());
+    preimage.private_transcript = deferred_bad.as_public_input().into_iter().map(Fr).collect();
+    let (outer_proof, pis) = outer_prove(&ir, pk, &preimage, &mut rng).await;
 
     let err = vk
         .verify(&srs().verifier, &outer_proof, pis.into_iter())
@@ -265,10 +269,9 @@ async fn collapsed_decider_catches_a_bad_carried_accumulator() {
         "must fail at the pairing, not the PLONK check: {err:#}"
     );
 
-    // Control: `None` ignores the carried accumulator, so this passes.
-    let none = serialize_vk(&recursive_vk, DeciderKind::None).expect("none blob");
-    let ir_none = outer_ir_for(&none, &instance);
-    let (pk_none, vk_none) = outer_keygen(&ir_none, "none decider, same recursive proof").await;
+    // Control: ignoring the carried accumulator, this passes.
+    let ir_none = outer_ir_for(&blob, &instance);
+    let (pk_none, vk_none) = outer_keygen(&ir_none, "carried accumulator ignored").await;
     let (proof, pis) = outer_prove(
         &ir_none,
         pk_none,
@@ -355,7 +358,7 @@ async fn guarded_off_verify_proof_is_witness_independent() {
     let ir = shared_guard_ir(&inner);
     let (pk, vk) = outer_keygen(&ir, "shared guard, off").await;
 
-    let trivial = trivial_accumulator_pis();
+    let trivial = trivial_accumulator().as_public_input();
 
     // Same length as a real proof, so no size check can tell them apart.
     let garbage = vec![0xABu8; inner.proof.len()];
@@ -468,10 +471,9 @@ async fn impact_between_two_proofs_leaves_accumulators_intact() {
         );
 
         for (i, inner) in inner.iter().enumerate() {
-            let want = accumulator_pis(
-                &verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
-                    .expect("off-circuit preparation"),
-            );
+            let want = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
+                .expect("off-circuit preparation")
+                .as_public_input();
             assert_eq!(
                 proof.accumulators[i].as_public_input(),
                 want,
@@ -584,10 +586,9 @@ async fn same_vk_verified_twice_is_accepted() {
     // Each accumulator must come from its own proof, not the first one reused.
     assert_eq!(outer_proof.accumulators.len(), 2);
     for (i, inner) in inner.iter().enumerate() {
-        let want = accumulator_pis(
-            &verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
-                .expect("off-circuit preparation"),
-        );
+        let want = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
+            .expect("off-circuit preparation")
+            .as_public_input();
         assert_eq!(
             outer_proof.accumulators[i].as_public_input(),
             want,
@@ -678,15 +679,13 @@ async fn wrong_length_instance_is_rejected() {
 /// An inner proof that defers nothing of its own.
 #[actix_rt::test]
 #[ignore = "slow: builds and proves a high-k outer circuit"]
-async fn verify_proof_without_a_decider() {
+async fn verify_proof_carrying_nothing() {
     let mut rng = test_rng();
     let inner = scalar_inner_proof(&mut rng).await;
 
-    let ir = witnessed_outer_ir(&inner.vk_blob, inner.pis.len());
-    // One accumulator, whatever the decider kind. That is what keeps the
-    // exposed shape witness-independent and computable at keygen.
+    let ir = witnessed_outer_ir(&inner.vk_blob, inner.pis.len(), false);
     assert_eq!(ir.accumulator_count(), 1);
-    let (pk, vk) = outer_keygen(&ir, "none decider, guarded").await;
+    let (pk, vk) = outer_keygen(&ir, "carrying nothing, guarded").await;
 
     // Proving already runs both `verify_proof` passes, so it fails if the inner
     // proof does not check out; verifying then discharges the accumulator that
@@ -706,25 +705,24 @@ async fn verify_proof_without_a_decider() {
     .await;
     assert_eq!(
         guarded.accumulators[0].as_public_input(),
-        trivial_accumulator_pis(),
+        trivial_accumulator().as_public_input(),
     );
     outer_verify(&vk, &guarded, guarded_pis);
 }
 
-/// An inner proof carrying an accumulator of its own, which the instruction
-/// folds into the one it exposes.
+/// An inner proof carrying an accumulator of its own, which the circuit
+/// aggregates into the one it exposes.
 #[actix_rt::test]
 #[ignore = "slow: two levels of in-circuit verification"]
-async fn verify_proof_with_a_collapsed_decider() {
+async fn verify_proof_carrying_an_accumulator() {
     let mut rng = test_rng();
 
     // The proof to be verified in-circuit, and the accumulator verifying it
     // defers.
     let inner = scalar_inner_proof(&mut rng).await;
-    let deferred = accumulator_pis(
-        &verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
-            .expect("the accumulator the scalar proof defers"),
-    );
+    let deferred = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
+        .expect("the accumulator the scalar proof defers")
+        .as_public_input();
 
     // The proof that verifies it, carrying that accumulator in its instance
     // tail.
@@ -735,29 +733,27 @@ async fn verify_proof_with_a_collapsed_decider() {
     let (proof, recursive_vk) =
         prove_recursive(&relation, &instance, inner.proof.clone(), &mut rng).await;
 
-    let collapsed = serialize_vk(&recursive_vk, DeciderKind::Collapsed).expect("collapsed blob");
-    let ir = witnessed_outer_ir(&collapsed, instance.len());
+    let mut blob = Vec::new();
+    recursive_vk
+        .write(&mut blob, SerdeFormat::Processed)
+        .expect("recursive blob");
+    let ir = witnessed_outer_ir(&blob, instance.len(), true);
+    // One accumulator, as without a carried one: they are aggregated.
     assert_eq!(ir.accumulator_count(), 1);
-    let (pk, vk) = outer_keygen(&ir, "collapsed decider, guarded").await;
+    let (pk, vk) = outer_keygen(&ir, "carrying an accumulator, guarded").await;
 
+    // The statement is witnessed first, then the carried accumulator, so the
+    // private transcript is the inner instance as is.
     let preimage = witnessed_outer_preimage(true, &proof, &instance);
     let (outer_proof, pis) = outer_prove(&ir, pk.clone(), &preimage, &mut rng).await;
 
-    // What the instruction exposed is the fold, not the recursive proof's own
+    // What the circuit exposed is the aggregate, not the recursive proof's own
     // accumulator: the carried one is in there too.
-    let own = accumulator_pis(
-        &verify_proof_offcircuit(
-            &serialize_vk(&recursive_vk, DeciderKind::None).expect("none blob"),
-            &instance,
-            &proof,
-            true,
-        )
-        .expect("the recursive proof's own accumulator"),
-    );
+    let own = verify_proof_offcircuit(&blob, &instance, &proof, true)
+        .expect("the recursive proof's own accumulator");
     assert_ne!(
-        outer_proof.accumulators[0].as_public_input(),
-        own,
-        "the carried accumulator must have been folded in"
+        outer_proof.accumulators[0], own,
+        "the carried accumulator must have been aggregated in"
     );
 
     // One pairing, discharging both.
@@ -773,7 +769,7 @@ async fn verify_proof_with_a_collapsed_decider() {
     .await;
     assert_eq!(
         guarded.accumulators[0].as_public_input(),
-        trivial_accumulator_pis(),
+        trivial_accumulator().as_public_input(),
     );
     outer_verify(&vk, &guarded, guarded_pis);
 }
@@ -786,10 +782,14 @@ async fn verify_proof_with_a_collapsed_decider() {
 fn shared_guard_ir(inner: &InnerProof) -> IrSource {
     let instructions = format!(
         r#"{{ "op": "inner_proof", "guard": "%g", "output": "%p_0" }},
-           {{ "op": "verify_proof", "guard": "%g", "vk_hash": "0x{hash}",
-              "instance": [{instance}], "proof": "%p_0" }}"#,
-        hash = vk_hash_hex(&inner.vk_blob),
-        instance = instance_json(&inner.pis),
+           {verify}"#,
+        verify = verify_and_expose(
+            0,
+            "%g",
+            &inner.vk_blob,
+            &instance_operands(&inner.pis),
+            false
+        ),
     );
     outer_ir_with(
         r#"{ "name": "%g", "type": "Scalar<BLS12-381>" }"#,
@@ -806,25 +806,11 @@ fn interleaved_ir(a: &InnerProof, b: &InnerProof) -> IrSource {
     let instructions = format!(
         r#"{{ "op": "inner_proof", "guard": "0x01", "output": "%p_0" }},
            {{ "op": "inner_proof", "guard": "0x01", "output": "%p_1" }},
-           {{
-               "op": "verify_proof",
-               "guard": "0x01",
-               "vk_hash": "0x{hash_a}",
-               "instance": [{instance_a}],
-               "proof": "%p_0"
-           }},
+           {verify_a},
            {{ "op": "impact", "guard": "%v_0", "inputs": [{impact_operands}] }},
-           {{
-               "op": "verify_proof",
-               "guard": "0x01",
-               "vk_hash": "0x{hash_b}",
-               "instance": [{instance_b}],
-               "proof": "%p_1"
-           }}"#,
-        hash_a = vk_hash_hex(&a.vk_blob),
-        hash_b = vk_hash_hex(&b.vk_blob),
-        instance_a = instance_json(&a.pis),
-        instance_b = instance_json(&b.pis),
+           {verify_b}"#,
+        verify_a = verify_and_expose(0, "0x01", &a.vk_blob, &instance_operands(&a.pis), false),
+        verify_b = verify_and_expose(1, "0x01", &b.vk_blob, &instance_operands(&b.pis), false),
     );
     outer_ir_with(
         r#"{ "name": "%v_0", "type": "Scalar<BLS12-381>" }"#,
@@ -836,7 +822,7 @@ fn interleaved_ir(a: &InnerProof, b: &InnerProof) -> IrSource {
 
 /// The byte range and type of each value read while preparing `proof`.
 fn proof_reads(vk_blob: &[u8], instance: &[Fq], proof: &[u8]) -> Vec<(Range<usize>, &'static str)> {
-    let (_, vk) = deserialize_vk(vk_blob).expect("inner vk");
+    let vk = MidnightVK::read(&mut &vk_blob[..], SerdeFormat::Processed).expect("inner vk");
     let mut transcript = RecordingTranscript::init_from_bytes(proof);
     plonk::prepare::<Fq, KZGCommitmentScheme<Bls12>, RecordingTranscript>(
         vk.vk(),
@@ -973,7 +959,7 @@ impl Relation for RsaSignatureRelation {
 #[derive(Clone)]
 struct RecursiveRelation {
     /// The verifying key of the proof this one verifies, as registered:
-    /// `serialize_vk`'s blob.
+    /// `MidnightVK::write(SerdeFormat::Processed)`'s blob.
     pub inner_vk: Vec<u8>,
 }
 
@@ -996,10 +982,11 @@ impl Relation for RecursiveRelation {
         let x: AssignedNative<Fq> = std_lib.assign(layouter, instance.map(|fields| fields[0]))?;
         std_lib.constrain_as_public_input(layouter, &x)?;
 
-        // Verifying it constrains the deferred accumulator as the rest of our
-        // public inputs. Nothing here is guarded, so the guard is a fixed one.
+        // The deferred accumulator is the rest of our public inputs. Nothing
+        // here is guarded, so the guard is a fixed one.
         let on: AssignedBit<Fq> = std_lib.assign_fixed(layouter, true)?;
-        verify_proof_incircuit(std_lib, layouter, &self.inner_vk, &[&[x]], witness, &on)
+        let acc = verify_proof_incircuit(std_lib, layouter, &self.inner_vk, &[&[x]], witness, &on)?;
+        std_lib.verifier().constrain_as_public_input(layouter, &acc)
     }
 
     fn used_chips(&self) -> ZkStdLibArch {
@@ -1118,11 +1105,62 @@ fn prove_inner(
 }
 
 /// `pis` as `verify_proof` instance operands. Immediates are little-endian hex.
-fn instance_json(pis: &[Fq]) -> String {
+fn instance_operands(pis: &[Fq]) -> Vec<String> {
     pis.iter()
         .map(|f| format!("\"0x{}\"", const_hex::encode(Fr(*f).as_le_bytes())))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect()
+}
+
+/// `verify_proof` of `%p_{i}` against `statement` under `guard`, then
+/// `verify_accumulator` on its output.
+///
+/// If `carries`, the inner proof also carries an accumulator as the tail of its
+/// instance. It is witnessed as `%c_{i}`, and its encoding is that tail, so the
+/// inner proof is verified against the very accumulator aggregated in.
+fn verify_and_expose(
+    i: usize,
+    guard: &str,
+    vk_blob: &[u8],
+    statement: &[String],
+    carries: bool,
+) -> String {
+    let verify = |instance: &[String]| {
+        format!(
+            r#"{{ "op": "verify_proof", "guard": "{guard}", "vk_hash": "0x{hash}",
+                  "instance": [{ops}], "proof": "%p_{i}", "output": "%a_{i}" }}"#,
+            hash = vk_hash_hex(vk_blob),
+            ops = instance.join(", "),
+        )
+    };
+    if !carries {
+        return format!(
+            r#"{verify}, {{ "op": "verify_accumulator", "input": "%a_{i}" }}"#,
+            verify = verify(statement),
+        );
+    }
+    let encoded: Vec<String> = (0..accumulator_pi_len())
+        .map(|k| format!("\"%e_{i}_{k}\""))
+        .collect();
+    let instance: Vec<String> = statement.iter().chain(&encoded).cloned().collect();
+    format!(
+        r#"{{ "op": "private_input", "guard": "{guard}", "type": "Accumulator", "output": "%c_{i}" }},
+           {{ "op": "encode", "input": "%c_{i}", "outputs": [{encoded}] }},
+           {verify},
+           {{ "op": "aggregate_accumulators", "inputs": ["%a_{i}", "%c_{i}"], "output": "%d_{i}" }},
+           {{ "op": "verify_accumulator", "input": "%d_{i}" }}"#,
+        encoded = encoded.join(", "),
+        verify = verify(&instance),
+    )
+}
+
+/// How many of an inner instance's `len` fields are its statement: all of
+/// them, or all but the accumulator it `carries`.
+fn statement_len(len: usize, carries: bool) -> usize {
+    if carries {
+        len - accumulator_pi_len()
+    } else {
+        len
+    }
 }
 
 /// The outer IR, with the side-table attached.
@@ -1156,24 +1194,15 @@ async fn rsa_inner_proof(rng: &mut ChaCha20Rng) -> InnerProof {
     }
 }
 
-/// One `inner_proof` per entry, then one `verify_proof` per entry.
-fn outer_ir_for_all(entries: &[(Vec<u8>, Vec<Fq>)]) -> IrSource {
+/// One `inner_proof` per entry, then one [`verify_and_expose`] per entry.
+fn outer_ir_for_all(entries: &[(Vec<u8>, Vec<Fq>)], carries: bool) -> IrSource {
     let bindings = (0..entries.len())
         .map(|i| format!(r#"{{ "op": "inner_proof", "guard": "0x01", "output": "%p_{i}" }}"#))
         .collect::<Vec<_>>();
 
     let verifications = entries.iter().enumerate().map(|(i, (vk_blob, pis))| {
-        format!(
-            r#"{{
-                   "op": "verify_proof",
-                   "guard": "0x01",
-                   "vk_hash": "0x{vk_hash}",
-                   "instance": [{instance}],
-                   "proof": "%p_{i}"
-               }}"#,
-            vk_hash = vk_hash_hex(vk_blob),
-            instance = instance_json(pis),
-        )
+        let statement = &pis[..statement_len(pis.len(), carries)];
+        verify_and_expose(i, "0x01", vk_blob, &instance_operands(statement), carries)
     });
 
     let instructions = bindings
@@ -1195,14 +1224,14 @@ fn outer_ir_for_all(entries: &[(Vec<u8>, Vec<Fq>)]) -> IrSource {
 
 /// [`outer_ir_for_all`] for one proof.
 fn outer_ir_for(vk_blob: &[u8], inner_pis: &[Fq]) -> IrSource {
-    outer_ir_for_all(&[(vk_blob.to_vec(), inner_pis.to_vec())])
+    outer_ir_for_all(&[(vk_blob.to_vec(), inner_pis.to_vec())], false)
 }
 
 /// Builds [`outer_ir_for_all`] and runs keygen.
 async fn outer_setup_all(
     entries: &[(Vec<u8>, Vec<Fq>)],
 ) -> (IrSource, ProverKey<IrSource>, VerifierKey) {
-    let ir = outer_ir_for_all(entries);
+    let ir = outer_ir_for_all(entries, false);
     let label = format!("{} verify_proof instruction(s)", entries.len());
     let (pk, vk) = outer_keygen(&ir, &label).await;
     (ir, pk, vk)
@@ -1319,7 +1348,8 @@ fn outer_preimage_with(
 }
 
 /// The outer ZKIR circuit: witness the inner proof's `instance_len` public
-/// inputs, bind the proof, verify it.
+/// inputs (the accumulator among them as one `Accumulator`, if it `carries`
+/// one), bind the proof, verify it.
 ///
 /// ZKIR has no instruction of its own for the inner instance: the fields are
 /// ordinary prover witnesses, and `verify_proof` just names the variables they
@@ -1329,8 +1359,10 @@ fn outer_preimage_with(
 /// Everything is under the input guard `%g`, so one keygen serves both guard
 /// values — the guard changes what the accumulator public inputs are, never the
 /// shape of the circuit.
-fn witnessed_outer_ir(vk_blob: &[u8], instance_len: usize) -> IrSource {
-    let names: Vec<String> = (0..instance_len).map(|i| format!("\"%i_{i}\"")).collect();
+fn witnessed_outer_ir(vk_blob: &[u8], instance_len: usize, carries: bool) -> IrSource {
+    let names: Vec<String> = (0..statement_len(instance_len, carries))
+        .map(|i| format!("\"%i_{i}\""))
+        .collect();
     let witnesses = names.iter().map(|name| {
         format!(
             r#"{{ "op": "private_input", "guard": "%g",
@@ -1338,13 +1370,8 @@ fn witnessed_outer_ir(vk_blob: &[u8], instance_len: usize) -> IrSource {
         )
     });
     let pair = [
-        r#"{ "op": "inner_proof", "guard": "%g", "output": "%p" }"#.to_string(),
-        format!(
-            r#"{{ "op": "verify_proof", "guard": "%g", "vk_hash": "0x{hash}",
-                  "instance": [{names}], "proof": "%p" }}"#,
-            hash = vk_hash_hex(vk_blob),
-            names = names.join(", "),
-        ),
+        r#"{ "op": "inner_proof", "guard": "%g", "output": "%p_0" }"#.to_string(),
+        verify_and_expose(0, "%g", vk_blob, &names, carries),
     ];
     let instructions = witnesses
         .chain(pair)

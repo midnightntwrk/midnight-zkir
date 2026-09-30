@@ -3594,6 +3594,61 @@ mod proof_tests {
             .unwrap();
     }
 
+    #[actix_rt::test]
+    async fn test_constant_accumulator_proof() {
+        // The trivial accumulator, loaded as a constant and verified: the proof
+        // carries it, and it pairs.
+        use midnight_zkir::ir::Operand;
+        use midnight_zkir::ir_instructions::aggregate::trivial_accumulator;
+
+        let encoding: Vec<Operand> = trivial_accumulator()
+            .as_public_input()
+            .into_iter()
+            .map(|f| Operand::Immediate(transient_crypto::curve::Fr(f)))
+            .collect();
+        let ir_raw = format!(
+            r#"{{
+           "version": {{ "major": 3, "minor": 1 }},
+           "inputs": [],
+           "outputs": [],
+           "do_communications_commitment": false,
+           "instructions": [
+               {{ "op": "load_constant", "type": "Accumulator", "encoding": {encoding}, "output": "%c" }},
+               {{ "op": "verify_accumulator", "input": "%c" }}
+           ]
+        }}"#,
+            encoding = serde_json::to_string(&encoding).unwrap(),
+        );
+        let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
+        let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
+
+        let preimage = ProofPreimage {
+            inner_proofs: vec![],
+            binding_input: 42.into(),
+            communications_commitment: None,
+            inputs: vec![],
+            private_transcript: vec![],
+            public_transcript_inputs: vec![],
+            public_transcript_outputs: vec![],
+            key_location: KeyLocation(Cow::Borrowed("builtin")),
+        };
+        let (proof, _) = preimage
+            .prove::<IrSource>(
+                &mut ChaCha20Rng::from_seed([42; 32]),
+                &TestParams,
+                &TestResolver {
+                    pk: pk.clone(),
+                    vk: vk.clone(),
+                    ir: ir.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(proof.accumulators, vec![trivial_accumulator()]);
+        vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
+            .unwrap();
+    }
+
     #[test]
     fn test_constant_bad_encoding_rejected() {
         // A Native constant needs exactly one field element; two is invalid and

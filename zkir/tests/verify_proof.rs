@@ -20,7 +20,6 @@
 mod verify_proof_common;
 
 use midnight_zkir::IrSource;
-use midnight_zkir::decider::{DeciderKind, accumulator_pis, deserialize_vk, serialize_vk};
 use midnight_zkir::ir::IrMinorVersion;
 use midnight_zkir::ir_instructions::verify_proof::verify_proof_offcircuit;
 use serialize::{Deserializable, Serializable, tagged_deserialize, tagged_serialize};
@@ -28,8 +27,7 @@ use sha2::Digest;
 use transient_crypto::proofs::{InnerProofWitness, ProofPreimage, Zkir};
 
 use crate::verify_proof_common::{
-    SingleScalarRelation, inner_setup_for, load_ir, preimage_with, scalar_inner_proof, test_rng,
-    vk_hash_hex, with_vks,
+    load_ir, preimage_with, scalar_inner_proof, test_rng, vk_hash_hex, with_vks,
 };
 
 // ---------------------------------------------------------------------------
@@ -62,8 +60,10 @@ const VERIFY_PROOF_IR: &str = r#"{
            "guard": "%g",
            "vk_hash": "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
            "instance": ["%v_0"],
-           "proof": "%p_0"
+           "proof": "%p_0",
+           "output": "%a_0"
        },
+       { "op": "verify_accumulator", "input": "%a_0" },
        {
            "op": "inner_proof",
            "guard": "0x01",
@@ -74,25 +74,17 @@ const VERIFY_PROOF_IR: &str = r#"{
            "guard": "0x01",
            "vk_hash": "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
            "instance": ["%v_0"],
-           "proof": "%p_1"
-       }
+           "proof": "%p_1",
+           "output": "%a_1"
+       },
+       { "op": "verify_accumulator", "input": "%a_1" }
    ]
 }"#;
 
-/// Stub VK blobs of different lengths. They are never parsed as keys, but the
-/// first byte must be a valid decider tag (`0x00` = `None`) or it is rejected
-/// before the check under test runs.
-const VK_BLOB_A: [u8; 32] = {
-    let mut b = [0xaa; 32];
-    b[0] = 0x00;
-    b
-};
+/// Stub VK blobs of different lengths. They are never parsed as keys.
+const VK_BLOB_A: [u8; 32] = [0xaa; 32];
 
-const VK_BLOB_B: [u8; 48] = {
-    let mut b = [0xbb; 48];
-    b[0] = 0x00;
-    b
-};
+const VK_BLOB_B: [u8; 48] = [0xbb; 48];
 
 /// A lone `inner_proof` binding.
 const BIND_ONE: &str = r#"{ "op": "inner_proof", "guard": "0x01", "output": "%p_0" }"#;
@@ -101,8 +93,8 @@ const BIND_ONE: &str = r#"{ "op": "inner_proof", "guard": "0x01", "output": "%p_
 // Tests
 // ---------------------------------------------------------------------------
 
-/// `accumulator_count()` is one per `verify_proof` instruction, whatever its
-/// key or guard.
+/// `accumulator_count()` is one per `verify_accumulator` instruction, whatever
+/// the key or guard of the `verify_proof` it verifies.
 #[test]
 fn accumulator_count_tracks_verify_proof_instructions() {
     assert_eq!(
@@ -166,6 +158,18 @@ fn accumulator_count_tracks_verify_proof_instructions() {
         count(&mixed),
         2,
         "the split must not depend on which branch the prover takes"
+    );
+
+    let aggregated = format!(
+        "{},\n{}",
+        bind_and_prepare(&[vk_hash_hex(&VK_BLOB_A), vk_hash_hex(&VK_BLOB_B)]),
+        r#"{ "op": "aggregate_accumulators", "inputs": ["%a_0", "%a_1"], "output": "%a" },
+           { "op": "verify_accumulator", "input": "%a" }"#,
+    );
+    assert_eq!(
+        count(&aggregated),
+        1,
+        "aggregated accumulators are exposed once"
     );
 
     let ir_hash_only: IrSource = ir(&bind_and_verify_one(&vk_hash_hex(&VK_BLOB_A)));
@@ -291,8 +295,7 @@ async fn malformed_proof_witness_is_rejected() {
     let from_padded = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &padded, true)
         .expect("preparation of the padded proof");
     assert_eq!(
-        accumulator_pis(&from_real),
-        accumulator_pis(&from_padded),
+        from_real, from_padded,
         "trailing bytes must not change the accumulator"
     );
 }
@@ -388,36 +391,48 @@ fn side_table_requires_minor_1() {
     );
 }
 
-/// A VK blob round-trips byte-for-byte, and its decider tag is part of the
-/// hashed bytes.
-#[actix_rt::test]
-async fn vk_blob_round_trips_with_a_stable_hash() {
-    let (_srs, _pk, blob) = inner_setup_for::<SingleScalarRelation>("single-scalar").await;
+/// Every accumulator must reach exactly one `aggregate_accumulators` or
+/// `verify_accumulator`: a dropped one is an unchecked proof.
+#[test]
+fn every_accumulator_is_verified_exactly_once() {
+    let prepared = bind_and_prepare(&[vk_hash_hex(&VK_BLOB_A)]);
+    let err = expect_check_err(&ir(&prepared), preimage(1));
+    assert!(err.contains("never verified"), "got: {err}");
 
-    let (kind, vk) = deserialize_vk(&blob).expect("a freshly written blob must decode");
-    assert_eq!(
-        kind,
-        DeciderKind::None,
-        "the decider tag must survive the round-trip"
-    );
+    let verify_one = bind_and_verify_one(&vk_hash_hex(&VK_BLOB_A));
+    let twice = format!(r#"{verify_one},{{ "op": "verify_accumulator", "input": "%a_0" }}"#);
+    let err = expect_check_err(&ir(&twice), preimage(1));
+    assert!(err.contains("not an unconsumed accumulator"), "got: {err}");
 
-    // Compared as bytes, not hashes, so a failure shows what changed.
-    let again = serialize_vk(&vk, kind).expect("re-serialize");
-    assert_eq!(
-        again, blob,
-        "re-encoding a decoded key must reproduce the original bytes"
-    );
+    let witnessed =
+        r#"{ "op": "private_input", "guard": "0x00", "type": "Accumulator", "output": "%c" }"#;
+    let err = expect_check_err(&ir(witnessed), preimage(0));
+    assert!(err.contains("never verified"), "got: {err}");
 
-    let collapsed = serialize_vk(&vk, DeciderKind::Collapsed).expect("serialize as collapsed");
-    assert_ne!(
-        vk_hash_hex(&collapsed),
-        vk_hash_hex(&blob),
-        "the same key under another decider must hash differently"
-    );
+    // Neither `%x` nor `%y` was produced, so `%x` cannot feed itself.
+    let self_fed = r#"{ "op": "aggregate_accumulators", "inputs": ["%x", "%y"], "output": "%x" }"#;
+    let err = expect_check_err(&ir(self_fed), preimage(0));
+    assert!(err.contains("not an unconsumed accumulator"), "got: {err}");
+}
+
+/// The accumulator instructions round-trip through JSON and binary.
+#[test]
+fn accumulator_text_format_roundtrips() {
+    let ir = ir(&format!(
+        "{},\n{}",
+        bind_and_prepare(&[vk_hash_hex(&VK_BLOB_A)]),
+        r#"{ "op": "private_input", "guard": "0x01", "type": "Accumulator", "output": "%c" },
+           { "op": "aggregate_accumulators", "inputs": ["%a_0", "%c"], "output": "%a" },
+           { "op": "verify_accumulator", "input": "%a" }"#,
+    ));
+    let json = serde_json::to_string(&ir).expect("serializes");
+    assert_eq!(serde_json::from_str::<IrSource>(&json).expect("parses"), ir);
+
+    let mut bytes = Vec::new();
+    tagged_serialize(&ir, &mut bytes).expect("serializes");
     assert_eq!(
-        collapsed.len(),
-        blob.len(),
-        "the blobs should differ only in the tag byte"
+        tagged_deserialize::<IrSource>(&bytes[..]).expect("parses"),
+        ir
     );
 }
 
@@ -468,8 +483,10 @@ fn guarded_pair(i: usize, guard: &str, blob: &[u8]) -> String {
                "guard": "{guard}",
                "vk_hash": "0x{hash}",
                "instance": ["0x7b"],
-               "proof": "%p_{i}"
-           }}"#,
+               "proof": "%p_{i}",
+               "output": "%a_{i}"
+           }},
+           {{ "op": "verify_accumulator", "input": "%a_{i}" }}"#,
         hash = vk_hash_hex(blob),
     )
 }
@@ -519,20 +536,30 @@ fn ir_with_vks(instructions: &str, vks: Vec<Vec<u8>>) -> IrSource {
     with_vks(ir(instructions), vks)
 }
 
-/// Binds `%p_0..%p_n`, then one `verify_proof` per hash. Each gets a distinct
-/// instance so a round-trip that mixed them up would show.
-fn bind_and_verify(vk_hashes: &[String]) -> String {
+/// Binds `%p_0..%p_n`, then one `verify_proof` per hash, into `%a_0..%a_n`.
+/// Each gets a distinct instance so a round-trip that mixed them up would show.
+fn bind_and_prepare(vk_hashes: &[String]) -> String {
     let binds = (0..vk_hashes.len())
         .map(|i| format!(r#"{{ "op": "inner_proof", "guard": "0x01", "output": "%p_{i}" }}"#))
         .collect::<Vec<_>>();
     let verifies = vk_hashes.iter().enumerate().map(|(i, h)| {
         let instance = 0x7b + i;
         format!(
-            r#"{{ "op": "verify_proof", "guard": "0x01", "vk_hash": "0x{h}", "instance": ["0x{instance:02x}"], "proof": "%p_{i}" }}"#
+            r#"{{ "op": "verify_proof", "guard": "0x01", "vk_hash": "0x{h}", "instance": ["0x{instance:02x}"], "proof": "%p_{i}", "output": "%a_{i}" }}"#
         )
     });
     binds
         .into_iter()
+        .chain(verifies)
+        .collect::<Vec<_>>()
+        .join(",\n")
+}
+
+/// [`bind_and_prepare`], verifying each accumulator.
+fn bind_and_verify(vk_hashes: &[String]) -> String {
+    let verifies = (0..vk_hashes.len())
+        .map(|i| format!(r#"{{ "op": "verify_accumulator", "input": "%a_{i}" }}"#));
+    std::iter::once(bind_and_prepare(vk_hashes))
         .chain(verifies)
         .collect::<Vec<_>>()
         .join(",\n")

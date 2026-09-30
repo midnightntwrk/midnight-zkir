@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::decider::accumulator_pis;
 use crate::ir_instructions::add::{add_incircuit, add_offcircuit};
+use crate::ir_instructions::aggregate::{aggregate_incircuit, aggregate_offcircuit};
 use crate::ir_instructions::assign::assign_incircuit;
 use crate::ir_instructions::assign_constant::assign_constant_incircuit;
 use crate::ir_instructions::constrain_eq::{constrain_eq_incircuit, constrain_eq_offcircuit};
@@ -48,6 +48,7 @@ use midnight_circuits::instructions::{
     PublicInputInstructions, RangeCheckInstructions, ZeroInstructions,
 };
 use midnight_circuits::types::{AssignedBit, AssignedByte, AssignedNative, InnerValue};
+use midnight_circuits::verifier::AssignedAccumulator;
 use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
 use midnight_proofs::{
     circuit::{Layouter, Value},
@@ -65,7 +66,7 @@ use transient_crypto::curve::{FR_BITS, FR_BYTES_STORED, Fr};
 use transient_crypto::fab::{AlignmentExt, ValueReprAlignedValue};
 use transient_crypto::hash::{hash_to_curve, transient_commit, transient_hash};
 use transient_crypto::proofs::{
-    InnerProofWitness, ProofPreimage, ProvingError, accumulator_pi_len,
+    DeferredAccumulator, InnerProofWitness, ProofPreimage, ProvingError, accumulator_pi_len,
 };
 
 /// The raw data prior to proving. Note that this should *not* be considered part of the public
@@ -232,12 +233,78 @@ fn fab_decode_to_bytes_atom(
 }
 
 impl IrSource {
-    /// Number of `verify_proof` instructions in this circuit.
+    /// Number of `verify_accumulator` instructions in this circuit.
     pub fn accumulator_count(&self) -> usize {
         self.instructions
             .iter()
-            .filter(|i| matches!(i, I::VerifyProof { .. }))
+            .filter(|i| matches!(i, I::VerifyAccumulator { .. }))
             .count()
+    }
+
+    /// Rejects an accumulator that is dropped or used twice: each one an
+    /// instruction produces must be consumed exactly once, by
+    /// `aggregate_accumulators` or `verify_accumulator`.
+    fn validate_accumulators(&self) -> anyhow::Result<()> {
+        let mut produced: HashMap<&Identifier, bool> = HashMap::new();
+        let mut order: Vec<&Identifier> = Vec::new();
+        let consume = |produced: &mut HashMap<&Identifier, bool>, op: &Operand| {
+            if let Operand::Variable(id) = op
+                && let Some(consumed) = produced.get_mut(id)
+                && !*consumed
+            {
+                *consumed = true;
+                return Ok(());
+            }
+            bail!(
+                "{op:?} is not an unconsumed accumulator: each one an instruction \
+                 produces must be consumed exactly once"
+            );
+        };
+
+        for ins in self.instructions.iter() {
+            let output = match ins {
+                I::VerifyProof { output, .. }
+                | I::PrivateInput {
+                    val_t: IrType::Accumulator,
+                    output,
+                    ..
+                }
+                | I::PublicInput {
+                    val_t: IrType::Accumulator,
+                    output,
+                    ..
+                }
+                | I::LoadConstant {
+                    val_t: IrType::Accumulator,
+                    output,
+                    ..
+                } => output,
+                I::AggregateAccumulators { inputs, output } => {
+                    for op in inputs {
+                        consume(&mut produced, op)?;
+                    }
+                    output
+                }
+                I::VerifyAccumulator { input } => {
+                    consume(&mut produced, input)?;
+                    continue;
+                }
+                _ => continue,
+            };
+            if produced.insert(output, false).is_some() {
+                bail!("accumulator {} is rebound", output.0);
+            }
+            order.push(output);
+        }
+
+        if let Some(id) = order.iter().find(|id| !produced[*id]) {
+            bail!(
+                "accumulator {} is never verified: it must reach a `verify_accumulator`",
+                id.0
+            );
+        }
+
+        Ok(())
     }
 
     /// Rejects a malformed `inner_proof` / `verify_proof` pairing: each
@@ -342,6 +409,7 @@ impl IrSource {
         preimage: &ProofPreimage,
     ) -> Result<Preprocessed, ProvingError> {
         self.validate_inner_proofs()?;
+        self.validate_accumulators()?;
         let verify_proof_vks = self.resolve_verify_proof_vks()?;
 
         let mut memory: HashMap<Identifier, IrValue> = HashMap::new();
@@ -371,7 +439,7 @@ impl IrSource {
 
         // ZKIR's own public inputs (binding input, communications commitment,
         // impact fields) are collected in `pis` here. The deferred accumulator
-        // PIs emitted by `verify_proof` are collected separately in `acc_pis`;
+        // PIs emitted by `verify_accumulator` are collected separately in `acc_pis`;
         // the two are stitched together at the end as `acc_pis ++ pis`,
         // matching the layout the in-circuit `circuit()` synthesis produces.
         let mut acc_pis: Vec<Fr> = Vec::new();
@@ -980,6 +1048,7 @@ impl IrSource {
                     vk_hash,
                     instance,
                     proof,
+                    output,
                 } => {
                     let guard = resolve_operand_bool(&memory, guard)?;
                     let instance = instance
@@ -1000,9 +1069,19 @@ impl IrSource {
                     })?;
 
                     let acc = verify_proof_offcircuit(vk_blob, &instance, proof, guard)?;
-                    for f in accumulator_pis(&acc) {
-                        acc_pis.push(Fr(f));
-                    }
+                    memory.insert(output.clone(), IrValue::Accumulator(acc));
+                }
+                I::AggregateAccumulators { inputs, output } => {
+                    let accs = inputs
+                        .iter()
+                        .map(|op| DeferredAccumulator::try_from(resolve_operand(&memory, op)?))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let acc = aggregate_offcircuit(&accs)?;
+                    memory.insert(output.clone(), IrValue::Accumulator(acc));
+                }
+                I::VerifyAccumulator { input } => {
+                    let acc = DeferredAccumulator::try_from(resolve_operand(&memory, input)?)?;
+                    acc_pis.extend(acc.as_public_input().into_iter().map(Fr));
                 }
                 I::InnerProof { guard, output } => {
                     // One witness per instruction, whatever the guard, so both
@@ -1106,6 +1185,8 @@ impl Relation for IrSource {
     ) -> Result<(), Error> {
         self.validate_inner_proofs()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
+        self.validate_accumulators()
+            .map_err(|e| Error::Synthesis(e.to_string()))?;
         let verify_proof_vks = self
             .resolve_verify_proof_vks()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
@@ -1204,11 +1285,11 @@ impl Relation for IrSource {
 
         // ZKIR's own public inputs (binding input, communications commitment,
         // impact fields) are collected here and constrained *after* the
-        // instruction loop. midnight-zk's `verify_proof` chip constrains its
+        // instruction loop. `verify_accumulator` constrains its
         // accumulator PIs inline as it runs, so deferring ZKIR's own constrains
         // makes the accumulator block naturally occupy the first
         // `N * accumulator_pi_len()` slots of the public-input vector (where
-        // `N` is the number of `verify_proof` instructions) with ZKIR's own
+        // `N` is the number of `verify_accumulator` instructions) with ZKIR's own
         // PIs following.
         let mut zkir_pi_cells: Vec<AssignedNative<outer::Scalar>> = Vec::new();
         // Offset into `preproc.pis` where ZKIR's own PIs begin: the accumulator
@@ -1793,6 +1874,7 @@ impl Relation for IrSource {
                     vk_hash,
                     instance,
                     proof,
+                    output,
                 } => {
                     let guard: AssignedBit<_> = {
                         let guard = resolve_operand(std, layouter, &memory, guard)?;
@@ -1818,7 +1900,7 @@ impl Relation for IrSource {
                         ))
                     })?;
 
-                    verify_proof_incircuit(
+                    let acc = verify_proof_incircuit(
                         std,
                         layouter,
                         vk_blob,
@@ -1826,6 +1908,22 @@ impl Relation for IrSource {
                         proof_value,
                         &guard,
                     )?;
+                    mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
+                }
+                I::AggregateAccumulators { inputs, output } => {
+                    let accs = inputs
+                        .iter()
+                        .map(|op| resolve_operand(std, layouter, &memory, op)?.try_into())
+                        .collect::<Result<Vec<_>, Error>>()?;
+                    let acc = aggregate_incircuit(std, layouter, &accs)?;
+                    mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
+                }
+                // Constrained inline, so the accumulator block leads the
+                // public inputs (see `acc_offset`).
+                I::VerifyAccumulator { input } => {
+                    let acc: AssignedAccumulator<_> =
+                        resolve_operand(std, layouter, &memory, input)?.try_into()?;
+                    std.verifier().constrain_as_public_input(layouter, &acc)?;
                 }
                 // The guard is off-circuit bookkeeping only: `preprocess` already
                 // resolved it, binding the empty blob where it was off, and
@@ -1915,15 +2013,23 @@ impl Relation for IrSource {
             self.instructions.iter().any(match_predicate)
         };
 
+        let involves_accumulators = involves_types(&[IrType::Accumulator])
+            || involves_instructions(&|op| {
+                matches!(
+                    op,
+                    I::VerifyProof { .. }
+                        | I::AggregateAccumulators { .. }
+                        | I::VerifyAccumulator { .. }
+                )
+            });
+
         ZkStdLibArch {
             jubjub: involves_types(&[IrType::JubjubPoint, IrType::JubjubScalar])
                 || involves_instructions(&|op| matches!(op, I::HashToCurve { .. })),
             poseidon: self.do_communications_commitment
+                || involves_accumulators
                 || involves_instructions(&|op| {
-                    matches!(
-                        op,
-                        I::TransientHash { .. } | I::HashToCurve { .. } | I::VerifyProof { .. }
-                    )
+                    matches!(op, I::TransientHash { .. } | I::HashToCurve { .. })
                 }),
             sha2_256: involves_instructions(&|op| matches!(op, I::PersistentHash { .. })),
             sha2_512: involves_instructions(&|op| matches!(op, I::Sha512 { .. })),
@@ -1941,7 +2047,7 @@ impl Relation for IrSource {
                 IrType::Secp256r1Base,
                 IrType::Secp256r1Scalar,
             ]),
-            bls12_381: involves_instructions(&|op| matches!(op, I::VerifyProof { .. })),
+            bls12_381: involves_accumulators,
             curve25519: involves_types(&[
                 IrType::Curve25519Point,
                 IrType::Curve25519Base,

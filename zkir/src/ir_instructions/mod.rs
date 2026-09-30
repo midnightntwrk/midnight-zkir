@@ -16,6 +16,7 @@ use transient_crypto::curve::outer;
 type F = outer::Scalar;
 
 pub mod add;
+pub mod aggregate;
 pub mod assign;
 pub mod assign_constant;
 pub mod constrain_eq;

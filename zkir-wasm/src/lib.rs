@@ -26,6 +26,7 @@ use transient_crypto::{
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+use zkir::ir_instructions::verify_proof::verify_inner_proof;
 
 struct JsKeyProvider(JsValue);
 
@@ -288,4 +289,27 @@ impl Zkir {
         tagged_serialize(&self.0, &mut buf)?;
         Ok(buf[..].into())
     }
+}
+
+/// Wasm binding for [`verify_inner_proof`]: reads the instance as JS bigints
+/// and checks the proof, throwing on any failure.
+#[wasm_bindgen(js_name = "checkInnerProof")]
+pub fn check_inner_proof(
+    vk_blob: Uint8Array,
+    instance: Vec<JsValue>,
+    proof: Uint8Array,
+) -> Result<(), JsError> {
+    let instance = instance
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let bi = v.dyn_into::<BigInt>().map_err(|_| {
+                JsError::new(&format!("public input {i} is not a bigint"))
+            })?;
+            fr_from_bigint(bi).map(|fr| fr.0)
+        })
+        .collect::<Result<Vec<_>, JsError>>()?;
+    verify_inner_proof(&vk_blob.to_vec(), &instance, &proof.to_vec())
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(())
 }

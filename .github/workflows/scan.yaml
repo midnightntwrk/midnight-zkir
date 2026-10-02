@@ -3,9 +3,9 @@ permissions: {}
 
 on:
   push:
-    branches: [ 'main' ]
+    branches: [ 'zkir-v3' ]
   pull_request:
-    branches: [ 'main' ]
+    branches: [ 'zkir-v3' ]  # the default branch
   merge_group: {}         # required check must report; the job skips (= passes) there
   workflow_dispatch: {}   # so you can still run it manually
   schedule:

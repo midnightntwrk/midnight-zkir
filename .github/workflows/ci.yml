@@ -61,7 +61,10 @@ jobs:
       - name: Cargo doc
         run: MIDNIGHT_PP='' nix develop -c cargo doc --all-features --no-deps
 
+      # PR level only: the advisory DB is fetched live, so a new advisory
+      # published after approval would eject every queued PR.
       - name: Cargo audit
+        if: github.event_name != 'merge_group'
         run: nix develop -c cargo audit
 
   build-nix:
@@ -138,8 +141,8 @@ jobs:
 
       - name: Fix Nix permissions (needed on macos self hosted runner)
         run: |
-          sudo mkdir -m 0755 -p /nix/var/nix/{profiles,gcroots}/per-user/$USER
-          sudo chown -R $USER:nixbld /nix/var/nix/{profiles,gcroots}/per-user/$USER
+          sudo mkdir -m 0755 -p /nix/var/nix/{profiles,gcroots}/per-user/"$USER"
+          sudo chown -R "$USER":nixbld /nix/var/nix/{profiles,gcroots}/per-user/"$USER"
         shell: bash # Ensure bash is used for these commands
 
       # cargo-nextest emits JUnit XML natively, so this needs neither libtest's

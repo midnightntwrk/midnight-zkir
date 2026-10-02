@@ -3,6 +3,7 @@ name: ZKIR Build and Test
 on:
   workflow_dispatch:
   pull_request:
+  merge_group:
   push:
     branches:
       - 'main'
@@ -10,6 +11,9 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+# no top level default permissions for security reasons
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,9 +25,14 @@ jobs:
       matrix:
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: write # cache-nix-action purge deletes old caches
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -35,7 +44,7 @@ jobs:
             accept-flake-config = true
 
       - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v7
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
@@ -60,7 +69,10 @@ jobs:
       - name: Cargo doc
         run: MIDNIGHT_PP='' nix develop -c cargo doc --all-features --no-deps
 
+      # PR level only: the advisory DB is fetched live, so a new advisory
+      # published after approval would eject every queued PR.
       - name: Cargo audit
+        if: github.event_name != 'merge_group'
         run: nix develop -c cargo audit
 
   build-nix:
@@ -68,9 +80,14 @@ jobs:
       matrix:
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: write # cache-nix-action purge deletes old caches
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -82,7 +99,7 @@ jobs:
             accept-flake-config = true
 
       - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v7
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
@@ -107,9 +124,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: write # cache-nix-action purge deletes old caches
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -121,7 +143,7 @@ jobs:
             accept-flake-config = true
 
       - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v7
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
@@ -137,8 +159,8 @@ jobs:
 
       - name: Fix Nix permissions (needed on macos self hosted runner)
         run: |
-          sudo mkdir -m 0755 -p /nix/var/nix/{profiles,gcroots}/per-user/$USER
-          sudo chown -R $USER:nixbld /nix/var/nix/{profiles,gcroots}/per-user/$USER
+          sudo mkdir -m 0755 -p /nix/var/nix/{profiles,gcroots}/per-user/"$USER"
+          sudo chown -R "$USER":nixbld /nix/var/nix/{profiles,gcroots}/per-user/"$USER"
         shell: bash # Ensure bash is used for these commands
 
       # cargo-nextest emits JUnit XML natively, so this needs neither libtest's

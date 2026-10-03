@@ -13,6 +13,10 @@ default-members = [
 license = "Apache-2.0"
 repository = "https://github.com/midnightntwrk/midnight-zkir"
 
+[workspace.lints.clippy]
+redundant_clone = "warn"
+or_fun_call = "warn"
+
 # Used by the nix wasm packaging (bagel.nix); same settings as midnight-ledger.
 [profile.wasm]
 inherits = "release"

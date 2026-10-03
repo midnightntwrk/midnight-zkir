@@ -30,3 +30,6 @@ wasm-opt = ['-O', '--enable-reference-types']
 
 [features]
 proptest = ["zkir/proptest"]
+
+[lints]
+workspace = true

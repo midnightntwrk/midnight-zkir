@@ -1308,10 +1308,9 @@ impl IrSource {
             serde_json::Value::Object(mut obj) => {
                 let ver = serde_json::from_value(
                     obj.get("version")
-                        .ok_or(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Expected a version entry",
-                        ))?
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "Expected a version entry")
+                        })?
                         .clone(),
                 )?;
                 match ver {

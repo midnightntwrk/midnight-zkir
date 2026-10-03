@@ -260,7 +260,7 @@ impl IrSource {
             pis.push(
                 preimage
                     .communications_commitment
-                    .ok_or(anyhow!("Expected communications commitment"))?
+                    .ok_or_else(|| anyhow!("Expected communications commitment"))?
                     .0,
             );
         }
@@ -273,7 +273,7 @@ impl IrSource {
             let res = memory
                 .get(id)
                 .cloned()
-                .ok_or(anyhow!("variable not found: {:?}", id));
+                .ok_or_else(|| anyhow!("variable not found: {:?}", id));
             trace!(?res, "retrieved from {:?}", id);
             res
         };
@@ -872,7 +872,7 @@ impl IrSource {
         if self.do_communications_commitment {
             let comm_comm = preimage
                 .communications_commitment
-                .ok_or(anyhow!("Expected communications randomness"))?;
+                .ok_or_else(|| anyhow!("Expected communications randomness"))?;
             let mut comm_comm_inputs: Vec<Fr> = Vec::new();
             comm_comm_inputs.extend(preimage.inputs.iter());
             for value in outputs.iter() {
@@ -926,7 +926,7 @@ impl Relation for IrSource {
                     .memory
                     .get(&id.name)
                     .cloned()
-                    .unwrap_or(IrValue::Native(0.into()))
+                    .unwrap_or_else(|| IrValue::Native(0.into()))
             });
             input_values.push(value);
         }
@@ -951,7 +951,7 @@ impl Relation for IrSource {
         ) -> Result<&'a CircuitValue, Error> {
             memory
                 .get(id)
-                .ok_or(Error::Synthesis(format!("value {id:?} not in memory")))
+                .ok_or_else(|| Error::Synthesis(format!("value {id:?} not in memory")))
         }
 
         fn resolve_operand<'a>(
@@ -1237,14 +1237,12 @@ impl Relation for IrSource {
                     output,
                 } => {
                     let value = witness.as_ref().map_with_result(|preproc| {
-                        preproc
-                            .memory
-                            .get(output)
-                            .cloned()
-                            .ok_or(Error::Synthesis(format!(
+                        preproc.memory.get(output).cloned().ok_or_else(|| {
+                            Error::Synthesis(format!(
                                 "Output {:?} not found in witness memory",
                                 output
-                            )))
+                            ))
+                        })
                     })?;
 
                     mem_insert(

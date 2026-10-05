@@ -81,6 +81,91 @@ pub fn accumulate_incircuit(
     Ok(acc)
 }
 
+/// Tracks that each accumulator is consumed exactly once, by `accumulate` or
+/// `verify_accumulator`: a dropped one is an unchecked proof.
+#[derive(Default)]
+struct AccumulatorUses<'a> {
+    produced: HashSet<&'a Identifier>,
+    /// Produced but not yet consumed, in instruction order.
+    pending: Vec<&'a Identifier>,
+}
+
+impl<'a> AccumulatorUses<'a> {
+    fn produce(&mut self, id: &'a Identifier) -> anyhow::Result<()> {
+        if !self.produced.insert(id) {
+            bail!("accumulator {} is rebound", id.0);
+        }
+        self.pending.push(id);
+        Ok(())
+    }
+
+    fn consume(&mut self, op: &Operand) -> anyhow::Result<()> {
+        let pos = match op {
+            Operand::Variable(id) => self.pending.iter().position(|p| *p == id),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            anyhow!(
+                "{op:?} is not an unconsumed accumulator: each one must be consumed exactly once"
+            )
+        })?;
+        self.pending.remove(pos);
+        Ok(())
+    }
+
+    fn finish(&self) -> anyhow::Result<()> {
+        if let Some(id) = self.pending.first() {
+            bail!(
+                "accumulator {} is never verified: it must reach a `verify_accumulator`",
+                id.0
+            );
+        }
+        Ok(())
+    }
+}
+
+impl IrSource {
+    /// Number of `verify_accumulator` instructions in this circuit.
+    pub fn accumulator_count(&self) -> usize {
+        self.instructions
+            .iter()
+            .filter(|i| matches!(i, I::VerifyAccumulator { .. }))
+            .count()
+    }
+
+    /// Rejects an accumulator that is dropped or used twice.
+    pub(crate) fn validate_accumulators(&self) -> anyhow::Result<()> {
+        let mut accs = AccumulatorUses::default();
+        for ins in self.instructions.iter() {
+            match ins {
+                I::VerifyProof { output, .. }
+                | I::PrivateInput {
+                    val_t: IrType::Accumulator,
+                    output,
+                    ..
+                }
+                | I::PublicInput {
+                    val_t: IrType::Accumulator,
+                    output,
+                    ..
+                }
+                | I::LoadConstant {
+                    val_t: IrType::Accumulator,
+                    output,
+                    ..
+                } => accs.produce(output)?,
+                I::Accumulate { inputs, output } => {
+                    inputs.iter().try_for_each(|op| accs.consume(op))?;
+                    accs.produce(output)?;
+                }
+                I::VerifyAccumulator { input } => accs.consume(input)?,
+                _ => {}
+            }
+        }
+        accs.finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -149,3 +149,107 @@ pub fn verify_proof_incircuit(
     acc.collapse(layouter, bls, scalar_chip)?;
     Ok(acc)
 }
+
+/// Tracks that each `inner_proof` binding is used by exactly one
+/// `verify_proof`, under the same guard.
+///
+/// Guards must match because each instruction reads only its own: guarded
+/// off, `inner_proof` binds an empty blob that a `verify_proof` guarded on
+/// would then fail to verify.
+#[derive(Default)]
+struct InnerProofUses<'a> {
+    bound: HashSet<&'a Identifier>,
+    /// Bound but not yet verified, with their guard, in instruction order.
+    pending: Vec<(&'a Identifier, &'a Operand)>,
+}
+
+impl<'a> InnerProofUses<'a> {
+    fn bind(&mut self, id: &'a Identifier, guard: &'a Operand) -> anyhow::Result<()> {
+        if !self.bound.insert(id) {
+            bail!("`inner_proof` rebinds {}", id.0);
+        }
+        self.pending.push((id, guard));
+        Ok(())
+    }
+
+    fn verify(&mut self, proof: &Identifier, guard: &Operand) -> anyhow::Result<()> {
+        let Some(pos) = self.pending.iter().position(|(id, _)| *id == proof) else {
+            if self.bound.contains(proof) {
+                bail!("{} is verified more than once", proof.0);
+            }
+            bail!(
+                "`verify_proof` names {}, which no preceding `inner_proof` binds",
+                proof.0
+            );
+        };
+        let (_, bound_guard) = self.pending.remove(pos);
+        if bound_guard != guard {
+            bail!(
+                "`verify_proof` on {} is guarded differently to the `inner_proof` that bound it",
+                proof.0
+            );
+        }
+        Ok(())
+    }
+
+    fn finish(&self) -> anyhow::Result<()> {
+        if let Some((id, _)) = self.pending.first() {
+            bail!("`inner_proof` binds {}, which no `verify_proof` uses", id.0);
+        }
+        Ok(())
+    }
+}
+
+impl IrSource {
+    /// Rejects a malformed `inner_proof` / `verify_proof` pair: each
+    /// `verify_proof` must name a proof an earlier `inner_proof` bound, under
+    /// the same guard, and each bound proof must be used exactly once.
+    pub(crate) fn validate_inner_proofs(&self) -> anyhow::Result<()> {
+        let mut proofs = InnerProofUses::default();
+        for ins in self.instructions.iter() {
+            match ins {
+                I::InnerProof { guard, output } => proofs.bind(output, guard)?,
+                I::VerifyProof { guard, proof, .. } => proofs.verify(proof, guard)?,
+                _ => {}
+            }
+        }
+        proofs.finish()
+    }
+
+    /// Indexes [`IrSource::verify_proof_vks`] by digest, so each `VerifyProof`
+    /// can resolve its key by `vk_hash`.
+    ///
+    /// Rejects a duplicated blob, and one left unused by every instruction, so
+    /// the side-table stays a canonical set of the keys the circuit needs.
+    pub(crate) fn resolve_verify_proof_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
+        let mut vk_map: HashMap<Vec<u8>, &[u8]> = HashMap::new();
+        for vk_blob in self.verify_proof_vks.iter() {
+            let vk_hash = Sha256::digest(vk_blob).to_vec();
+            if vk_map.insert(vk_hash, vk_blob).is_some() {
+                bail!("duplicate verifying key in `verify_proof_vks`");
+            }
+        }
+
+        let mut used = HashSet::new();
+        for ins in self.instructions.iter() {
+            if let I::VerifyProof { vk_hash, .. } = ins {
+                if !vk_map.contains_key(vk_hash) {
+                    bail!(
+                        "no verifying key in `verify_proof_vks` for vk_hash 0x{}",
+                        const_hex::encode(vk_hash)
+                    );
+                }
+                used.insert(vk_hash);
+            }
+        }
+
+        if used.len() != vk_map.len() {
+            bail!(
+                "`verify_proof_vks` holds {} keys but only {} are used",
+                vk_map.len(),
+                used.len()
+            );
+        }
+        Ok(vk_map)
+    }
+}

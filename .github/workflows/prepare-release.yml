@@ -31,6 +31,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
           fetch-depth: 0
+          # Commits/PR go through the gh API with GH_TOKEN; nothing pushes via
+          # git, so don't leave the token on disk.
+          persist-credentials: false
 
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1

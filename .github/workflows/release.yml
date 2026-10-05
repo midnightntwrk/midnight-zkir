@@ -32,6 +32,11 @@ on:
         type: boolean
         default: false
 
+# Default to read-only; jobs that push the tag or create the release opt in
+# to `contents: write` explicitly.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
@@ -67,7 +72,7 @@ jobs:
             accept-flake-config = true
 
       - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v7
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
@@ -146,7 +151,7 @@ jobs:
             accept-flake-config = true
 
       - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v7
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
@@ -297,9 +302,10 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Via env (not inline ${{ }}) so it cannot inject shell.
+          STAGING: ${{ steps.assets.outputs.staging }}
         run: |
           set -euo pipefail
-          STAGING="${{ steps.assets.outputs.staging }}"
           if [ "${DRY_RUN}" = "true" ]; then
             echo "[dry-run] would create/update release ${TAG_NAME} (title: ZKIR ${VERSION}) with assets:"
             ls -1 "${STAGING}"

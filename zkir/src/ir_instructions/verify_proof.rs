@@ -18,9 +18,9 @@
 //! verifier side (reconstructing each accumulator from the public inputs and
 //! running its pairing check) lives in `transient-crypto`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use group::Group;
 use midnight_circuits::hash::poseidon::PoseidonState;
 use midnight_circuits::instructions::AssignmentInstructions;
@@ -39,7 +39,8 @@ use sha2::{Digest, Sha256};
 use transient_crypto::curve::outer;
 use transient_crypto::proofs::{DeferredAccumulator, InnerSelfEmulation as S};
 
-use crate::ir_instructions::aggregate::trivial_accumulator;
+use crate::ir::{Identifier, Instruction as I, IrSource, Operand};
+use crate::ir_instructions::accumulate::trivial_accumulator;
 
 /// Label prefix for an inner verifying key's fixed bases.
 ///
@@ -76,6 +77,8 @@ pub fn verify_proof_offcircuit(
         CircuitTranscript<PoseidonState<outer::Scalar>>,
     >(
         plonk_vk,
+        // A single identity committed instance: committed instances are not
+        // supported yet.
         &[&[<S as SelfEmulation>::C::identity()]],
         &[&[instance]],
         &mut transcript,
@@ -85,7 +88,7 @@ pub fn verify_proof_offcircuit(
     acc.resolve_fixed_bases(&bases);
     acc.collapse();
 
-    DeferredAccumulator::from_accumulator(&acc)
+    DeferredAccumulator::new(&acc)
         .ok_or_else(|| anyhow!("the inner proof's accumulator failed to collapse"))
 }
 
@@ -117,6 +120,10 @@ pub fn verify_proof_incircuit(
         ));
     }
 
+    // Only `transcript_repr` enters the transcript, but it cannot disagree
+    // with the key: `MidnightVK::read` never reads it, `VerifyingKey::from_parts`
+    // recomputes it from the commitments, domain and cs parsed here, the same
+    // ones the fixed bases below are taken from.
     let assigned_vk = verifier.assign_fixed_vk(
         layouter,
         &vk_name,

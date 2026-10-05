@@ -11,11 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The `aggregate_accumulators` instruction.
+//! The `accumulate` instruction.
 //!
 //! An `Accumulator` value is always collapsed and fixed-base-resolved: one
 //! point per side, with scalar one. Its pairing is left to the outer verifier,
 //! once `verify_accumulator` exposes it.
+
+use std::collections::HashSet;
 
 use anyhow::{anyhow, bail};
 use midnight_circuits::verifier::{Accumulator, AssignedAccumulator};
@@ -24,37 +26,53 @@ use midnight_zk_stdlib::ZkStdLib;
 use transient_crypto::curve::outer;
 use transient_crypto::proofs::{DeferredAccumulator, InnerSelfEmulation as S};
 
+use crate::ir::{Identifier, Instruction as I, IrSource, Operand};
+use crate::ir_types::IrType;
+
 /// The accumulator a guarded-off instruction produces, which satisfies the
 /// pairing invariant by construction.
 pub fn trivial_accumulator() -> DeferredAccumulator {
-    DeferredAccumulator::from_accumulator(&Accumulator::<S>::trivial(&[]))
+    DeferredAccumulator::new(&Accumulator::<S>::trivial(&[]))
         .expect("the trivial accumulator is collapsed")
 }
 
-/// Off-circuit `aggregate_accumulators`: accumulates `accs` and collapses the
+/// Rejects `acc` unless it is collapsed and fixed-base-resolved, as it must be
+/// before it is converted to public-input form.
+pub fn check_collapsed(acc: &AssignedAccumulator<S>) -> Result<(), Error> {
+    if !acc.is_collapsed() {
+        return Err(Error::Synthesis(
+            "the accumulator is not collapsed and fixed-base-resolved".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Off-circuit `accumulate`: accumulates `accs` and collapses the
 /// result.
-pub fn aggregate_offcircuit(accs: &[DeferredAccumulator]) -> anyhow::Result<DeferredAccumulator> {
+pub fn accumulate_offcircuit(accs: &[DeferredAccumulator]) -> anyhow::Result<DeferredAccumulator> {
     if accs.len() < 2 {
-        bail!("`aggregate_accumulators` needs at least two accumulators");
+        bail!("`accumulate` needs at least two accumulators");
     }
     let accs: Vec<_> = accs.iter().map(|acc| acc.to_accumulator()).collect();
     let mut acc = Accumulator::accumulate(&accs);
     acc.collapse();
-    DeferredAccumulator::from_accumulator(&acc)
-        .ok_or_else(|| anyhow!("an aggregated accumulator failed to collapse"))
+    DeferredAccumulator::new(&acc)
+        .ok_or_else(|| anyhow!("an accumulated accumulator failed to collapse"))
 }
 
-/// In-circuit counterpart of [`aggregate_offcircuit`].
-pub fn aggregate_incircuit(
+/// In-circuit counterpart of [`accumulate_offcircuit`].
+pub fn accumulate_incircuit(
     std: &ZkStdLib,
     layouter: &mut impl Layouter<outer::Scalar>,
     accs: &[AssignedAccumulator<S>],
 ) -> Result<AssignedAccumulator<S>, Error> {
     if accs.len() < 2 {
         return Err(Error::Synthesis(
-            "`aggregate_accumulators` needs at least two accumulators".into(),
+            "`accumulate` needs at least two accumulators".into(),
         ));
     }
+    // `accumulate` hashes the public-input form of its inputs.
+    accs.iter().try_for_each(check_collapsed)?;
     let bls = std.bls12_381();
     // TODO: if we use truncated challenges it may make sense to collapse before
     // accumulating.
@@ -68,9 +86,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggregation_needs_two_accumulators() {
-        let acc = aggregate_offcircuit(&[trivial_accumulator(), trivial_accumulator()]).unwrap();
+    fn accumulation_needs_two_accumulators() {
+        let acc = accumulate_offcircuit(&[trivial_accumulator(), trivial_accumulator()]).unwrap();
         assert_eq!(acc, trivial_accumulator());
-        assert!(aggregate_offcircuit(&[acc]).is_err());
+        assert!(accumulate_offcircuit(&[acc]).is_err());
     }
 }

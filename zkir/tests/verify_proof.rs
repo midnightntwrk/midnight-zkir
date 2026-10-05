@@ -160,16 +160,16 @@ fn accumulator_count_tracks_verify_proof_instructions() {
         "the split must not depend on which branch the prover takes"
     );
 
-    let aggregated = format!(
+    let accumulated = format!(
         "{},\n{}",
         bind_and_prepare(&[vk_hash_hex(&VK_BLOB_A), vk_hash_hex(&VK_BLOB_B)]),
-        r#"{ "op": "aggregate_accumulators", "inputs": ["%a_0", "%a_1"], "output": "%a" },
+        r#"{ "op": "accumulate", "inputs": ["%a_0", "%a_1"], "output": "%a" },
            { "op": "verify_accumulator", "input": "%a" }"#,
     );
     assert_eq!(
-        count(&aggregated),
+        count(&accumulated),
         1,
-        "aggregated accumulators are exposed once"
+        "accumulated accumulators are exposed once"
     );
 
     let ir_hash_only: IrSource = ir(&bind_and_verify_one(&vk_hash_hex(&VK_BLOB_A)));
@@ -391,7 +391,7 @@ fn side_table_requires_minor_1() {
     );
 }
 
-/// Every accumulator must reach exactly one `aggregate_accumulators` or
+/// Every accumulator must reach exactly one `accumulate` or
 /// `verify_accumulator`: a dropped one is an unchecked proof.
 #[test]
 fn every_accumulator_is_verified_exactly_once() {
@@ -410,7 +410,7 @@ fn every_accumulator_is_verified_exactly_once() {
     assert!(err.contains("never verified"), "got: {err}");
 
     // Neither `%x` nor `%y` was produced, so `%x` cannot feed itself.
-    let self_fed = r#"{ "op": "aggregate_accumulators", "inputs": ["%x", "%y"], "output": "%x" }"#;
+    let self_fed = r#"{ "op": "accumulate", "inputs": ["%x", "%y"], "output": "%x" }"#;
     let err = expect_check_err(&ir(self_fed), preimage(0));
     assert!(err.contains("not an unconsumed accumulator"), "got: {err}");
 }
@@ -422,7 +422,7 @@ fn accumulator_text_format_roundtrips() {
         "{},\n{}",
         bind_and_prepare(&[vk_hash_hex(&VK_BLOB_A)]),
         r#"{ "op": "private_input", "guard": "0x01", "type": "Accumulator", "output": "%c" },
-           { "op": "aggregate_accumulators", "inputs": ["%a_0", "%c"], "output": "%a" },
+           { "op": "accumulate", "inputs": ["%a_0", "%c"], "output": "%a" },
            { "op": "verify_accumulator", "input": "%a" }"#,
     ));
     let json = serde_json::to_string(&ir).expect("serializes");

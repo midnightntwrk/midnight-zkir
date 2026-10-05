@@ -21,7 +21,7 @@ use midnight_proofs::{
 use midnight_zk_stdlib::ZkStdLib;
 
 use crate::{
-    ir_instructions::F,
+    ir_instructions::{F, accumulate::check_collapsed},
     ir_types::{CircuitValue, IrValue},
 };
 
@@ -109,6 +109,7 @@ pub fn assign_constant_incircuit(
                 &[],
                 Value::known(acc.to_accumulator()),
             )?;
+            check_collapsed(&assigned)?;
             for (wire, constant) in verifier
                 .as_public_input(layouter, &assigned)?
                 .iter()

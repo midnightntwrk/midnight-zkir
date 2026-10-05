@@ -28,7 +28,7 @@ use transient_crypto::curve::Fr;
 use transient_crypto::proofs::DeferredAccumulator;
 
 use crate::{
-    ir_instructions::F,
+    ir_instructions::{F, accumulate::check_collapsed},
     ir_types::{BYTES_PER_FIELD_ELEMENT, CircuitValue, IrType, IrValue},
 };
 use anyhow::anyhow;
@@ -147,7 +147,10 @@ pub fn encode_incircuit(
             (std_lib.curve25519().scalar_field_chip()).as_public_input(layouter, s)
         }
 
-        CircuitValue::Accumulator(acc) => std_lib.verifier().as_public_input(layouter, acc),
+        CircuitValue::Accumulator(acc) => {
+            check_collapsed(acc)?;
+            std_lib.verifier().as_public_input(layouter, acc)
+        }
     }?;
     Ok(encoded.into_iter().map(CircuitValue::Native).collect())
 }
@@ -298,9 +301,12 @@ mod tests {
 
     use super::*;
 
-    /// A collapsed accumulator with random points on both sides.
+    /// A collapsed accumulator with random points on both sides, which does
+    /// not satisfy the pairing invariant.
     fn random_accumulator() -> IrValue {
         use midnight_circuits::verifier::{Accumulator, Msm, SelfEmulation};
+        use midnight_curves::Bls12;
+        use midnight_proofs::poly::kzg::params::ParamsKZG;
         use transient_crypto::proofs::InnerSelfEmulation as S;
         let side = || {
             Msm::<S>::new(
@@ -310,7 +316,14 @@ mod tests {
             )
         };
         let acc = Accumulator::new(side(), side());
-        IrValue::Accumulator(DeferredAccumulator::from_accumulator(&acc).unwrap())
+        // Any SRS will do: two independent random points pair with negligible
+        // probability whatever the trapdoor.
+        let params = ParamsKZG::<Bls12>::unsafe_setup(1, OsRng).verifier_params();
+        assert!(
+            !acc.check(&params, &Default::default()),
+            "a random accumulator must not satisfy the pairing invariant"
+        );
+        IrValue::Accumulator(DeferredAccumulator::new(&acc).unwrap())
     }
 
     /// The off-circuit encoding of `value`, as raw field elements.

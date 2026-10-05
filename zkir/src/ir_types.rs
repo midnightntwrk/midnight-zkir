@@ -33,7 +33,7 @@ use serialize::{Deserializable, Serializable, Tagged};
 use transient_crypto::curve::{Fr, outer};
 use transient_crypto::proofs::{DeferredAccumulator, InnerSelfEmulation as S, accumulator_pi_len};
 
-use crate::ir_instructions::aggregate::trivial_accumulator;
+use crate::ir_instructions::accumulate::trivial_accumulator;
 
 type F = outer::Scalar;
 
@@ -538,7 +538,7 @@ impl CircuitValue {
 
             CircuitValue::Accumulator(acc) => acc.value().map(|acc| {
                 IrValue::Accumulator(
-                    DeferredAccumulator::from_accumulator(&acc)
+                    DeferredAccumulator::new(&acc)
                         .expect("an assigned accumulator is always collapsed"),
                 )
             }),

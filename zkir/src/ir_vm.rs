@@ -11,8 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::ir_instructions::accumulate::{
+    accumulate_incircuit, accumulate_offcircuit, check_collapsed,
+};
 use crate::ir_instructions::add::{add_incircuit, add_offcircuit};
-use crate::ir_instructions::aggregate::{aggregate_incircuit, aggregate_offcircuit};
 use crate::ir_instructions::assign::assign_incircuit;
 use crate::ir_instructions::assign_constant::assign_constant_incircuit;
 use crate::ir_instructions::constrain_eq::{constrain_eq_incircuit, constrain_eq_offcircuit};
@@ -60,7 +62,7 @@ use serialize::{Deserializable, Serializable, VecExt, tagged_deserialize, tagged
 use sha2::{Sha256, Sha512};
 use sha3::{Digest, Keccak256};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use transient_crypto::curve::outer;
 use transient_crypto::curve::{FR_BITS, FR_BYTES_STORED, Fr};
 use transient_crypto::fab::{AlignmentExt, ValueReprAlignedValue};
@@ -233,175 +235,6 @@ fn fab_decode_to_bytes_atom(
 }
 
 impl IrSource {
-    /// Number of `verify_accumulator` instructions in this circuit.
-    pub fn accumulator_count(&self) -> usize {
-        self.instructions
-            .iter()
-            .filter(|i| matches!(i, I::VerifyAccumulator { .. }))
-            .count()
-    }
-
-    /// Rejects an accumulator that is dropped or used twice: each one an
-    /// instruction produces must be consumed exactly once, by
-    /// `aggregate_accumulators` or `verify_accumulator`.
-    fn validate_accumulators(&self) -> anyhow::Result<()> {
-        let mut produced: HashMap<&Identifier, bool> = HashMap::new();
-        let mut order: Vec<&Identifier> = Vec::new();
-        let consume = |produced: &mut HashMap<&Identifier, bool>, op: &Operand| {
-            if let Operand::Variable(id) = op
-                && let Some(consumed) = produced.get_mut(id)
-                && !*consumed
-            {
-                *consumed = true;
-                return Ok(());
-            }
-            bail!(
-                "{op:?} is not an unconsumed accumulator: each one an instruction \
-                 produces must be consumed exactly once"
-            );
-        };
-
-        for ins in self.instructions.iter() {
-            let output = match ins {
-                I::VerifyProof { output, .. }
-                | I::PrivateInput {
-                    val_t: IrType::Accumulator,
-                    output,
-                    ..
-                }
-                | I::PublicInput {
-                    val_t: IrType::Accumulator,
-                    output,
-                    ..
-                }
-                | I::LoadConstant {
-                    val_t: IrType::Accumulator,
-                    output,
-                    ..
-                } => output,
-                I::AggregateAccumulators { inputs, output } => {
-                    for op in inputs {
-                        consume(&mut produced, op)?;
-                    }
-                    output
-                }
-                I::VerifyAccumulator { input } => {
-                    consume(&mut produced, input)?;
-                    continue;
-                }
-                _ => continue,
-            };
-            if produced.insert(output, false).is_some() {
-                bail!("accumulator {} is rebound", output.0);
-            }
-            order.push(output);
-        }
-
-        if let Some(id) = order.iter().find(|id| !produced[*id]) {
-            bail!(
-                "accumulator {} is never verified: it must reach a `verify_accumulator`",
-                id.0
-            );
-        }
-
-        Ok(())
-    }
-
-    /// Rejects a malformed `inner_proof` / `verify_proof` pairing: each
-    /// `verify_proof` must name a proof an earlier `inner_proof` bound, under
-    /// the same guard, and each bound proof must be used exactly once.
-    ///
-    /// Guards must match because each instruction reads only its own: guarded
-    /// off, `inner_proof` binds an empty blob that a `verify_proof` guarded on
-    /// would then fail to verify.
-    fn validate_inner_proofs(&self) -> anyhow::Result<()> {
-        // Guard the proof was bound under, and how many `VerifyProof`s took it.
-        let mut bound: HashMap<&Identifier, (&Operand, usize)> = HashMap::new();
-
-        for ins in self.instructions.iter() {
-            match ins {
-                I::InnerProof { guard, output } => {
-                    let rebound = bound.insert(output, (guard, 0)).is_some();
-                    if rebound {
-                        bail!("`inner_proof` rebinds {}", output.0);
-                    }
-                }
-                I::VerifyProof { guard, proof, .. } => {
-                    let (bound_guard, consumers) = bound.get_mut(proof).ok_or_else(|| {
-                        anyhow!(
-                            "`verify_proof` names {}, which no preceding `inner_proof` binds",
-                            proof.0
-                        )
-                    })?;
-                    if *bound_guard != guard {
-                        bail!(
-                            "`verify_proof` on {} is guarded differently to the `inner_proof` \
-                             that bound it",
-                            proof.0
-                        );
-                    }
-                    *consumers += 1;
-                    if *consumers > 1 {
-                        bail!("{} is verified more than once", proof.0);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Walk the instructions again rather than the map, so the first
-        // offender is reported in instruction order.
-        for ins in self.instructions.iter() {
-            if let I::InnerProof { output, .. } = ins
-                && bound[output].1 == 0
-            {
-                bail!(
-                    "`inner_proof` binds {}, which no `verify_proof` uses",
-                    output.0
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Indexes [`IrSource::verify_proof_vks`] by digest, so each `VerifyProof`
-    /// can resolve its key by `vk_hash`.
-    ///
-    /// Rejects a duplicated blob, and one left unused by every instruction, so
-    /// the side-table stays a canonical set of the keys the circuit needs.
-    fn resolve_verify_proof_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
-        let mut vk_map: HashMap<Vec<u8>, &[u8]> = HashMap::new();
-        for vk_blob in self.verify_proof_vks.iter() {
-            let vk_hash = Sha256::digest(vk_blob).to_vec();
-            if vk_map.insert(vk_hash, vk_blob).is_some() {
-                bail!("duplicate verifying key in `verify_proof_vks`");
-            }
-        }
-
-        let mut used = HashSet::new();
-        for ins in self.instructions.iter() {
-            if let I::VerifyProof { vk_hash, .. } = ins {
-                if !vk_map.contains_key(vk_hash) {
-                    bail!(
-                        "no verifying key in `verify_proof_vks` for vk_hash 0x{}",
-                        const_hex::encode(vk_hash)
-                    );
-                }
-                used.insert(vk_hash);
-            }
-        }
-
-        if used.len() != vk_map.len() {
-            bail!(
-                "`verify_proof_vks` holds {} keys but only {} are used",
-                vk_map.len(),
-                used.len()
-            );
-        }
-        Ok(vk_map)
-    }
-
     /// Performs a non-ZK run of a circuit, to ensure that constraints hold, and
     /// to produce a public input vector, and public input skip information.
     pub(crate) fn preprocess(
@@ -1071,12 +904,12 @@ impl IrSource {
                     let acc = verify_proof_offcircuit(vk_blob, &instance, proof, guard)?;
                     memory.insert(output.clone(), IrValue::Accumulator(acc));
                 }
-                I::AggregateAccumulators { inputs, output } => {
+                I::Accumulate { inputs, output } => {
                     let accs = inputs
                         .iter()
                         .map(|op| DeferredAccumulator::try_from(resolve_operand(&memory, op)?))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let acc = aggregate_offcircuit(&accs)?;
+                    let acc = accumulate_offcircuit(&accs)?;
                     memory.insert(output.clone(), IrValue::Accumulator(acc));
                 }
                 I::VerifyAccumulator { input } => {
@@ -1910,12 +1743,12 @@ impl Relation for IrSource {
                     )?;
                     mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
                 }
-                I::AggregateAccumulators { inputs, output } => {
+                I::Accumulate { inputs, output } => {
                     let accs = inputs
                         .iter()
                         .map(|op| resolve_operand(std, layouter, &memory, op)?.try_into())
                         .collect::<Result<Vec<_>, Error>>()?;
-                    let acc = aggregate_incircuit(std, layouter, &accs)?;
+                    let acc = accumulate_incircuit(std, layouter, &accs)?;
                     mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
                 }
                 // Constrained inline, so the accumulator block leads the
@@ -1923,6 +1756,7 @@ impl Relation for IrSource {
                 I::VerifyAccumulator { input } => {
                     let acc: AssignedAccumulator<_> =
                         resolve_operand(std, layouter, &memory, input)?.try_into()?;
+                    check_collapsed(&acc)?;
                     std.verifier().constrain_as_public_input(layouter, &acc)?;
                 }
                 // The guard is off-circuit bookkeeping only: `preprocess` already
@@ -2017,9 +1851,7 @@ impl Relation for IrSource {
             || involves_instructions(&|op| {
                 matches!(
                     op,
-                    I::VerifyProof { .. }
-                        | I::AggregateAccumulators { .. }
-                        | I::VerifyAccumulator { .. }
+                    I::VerifyProof { .. } | I::Accumulate { .. } | I::VerifyAccumulator { .. }
                 )
             });
 

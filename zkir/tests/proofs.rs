@@ -3599,7 +3599,7 @@ mod proof_tests {
         // The trivial accumulator, loaded as a constant and verified: the proof
         // carries it, and it pairs.
         use midnight_zkir::ir::Operand;
-        use midnight_zkir::ir_instructions::aggregate::trivial_accumulator;
+        use midnight_zkir::ir_instructions::accumulate::trivial_accumulator;
 
         let encoding: Vec<Operand> = trivial_accumulator()
             .as_public_input()

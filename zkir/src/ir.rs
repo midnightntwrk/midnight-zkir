@@ -1421,7 +1421,7 @@ pub enum Instruction {
     /// the `InnerProof` instruction that produces `proof`.
     ///
     /// WARNING: the proof is only verified once its accumulator reaches a
-    /// `VerifyAccumulator`, possibly through `AggregateAccumulators`.
+    /// `VerifyAccumulator`, possibly through `Accumulate`.
     ///
     /// One output, the accumulator.
     VerifyProof {
@@ -1462,12 +1462,12 @@ pub enum Instruction {
         /// The output variable name.
         output: Identifier,
     },
-    /// Aggregates two or more `Accumulator`s into one, which pairs iff all of
+    /// Accumulates two or more `Accumulator`s into one, which pairs iff all of
     /// them do.
     ///
-    /// One output, the aggregated accumulator.
-    AggregateAccumulators {
-        /// The accumulators to aggregate.
+    /// One output, the resulting accumulator.
+    Accumulate {
+        /// The accumulators to accumulate.
         inputs: Vec<Operand>,
         /// The output variable name (an `Accumulator`).
         output: Identifier,

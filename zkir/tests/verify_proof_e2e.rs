@@ -26,7 +26,7 @@
 //!     [`SingleScalarRelation`](verify_proof_common::SingleScalarRelation) proof
 //!     in-circuit, so it carries the accumulator that verification defers in
 //!     its instance tail. The outer circuit witnesses it with `private_input`,
-//!     ties it to that tail, and aggregates it into its own.
+//!     ties it to that tail, and accumulates it into its own.
 //!
 //! Tests that build an outer circuit are `#[ignore]`d for runtime alone: they
 //! prove circuits of k=18 and above, which takes minutes. They pass, and
@@ -64,7 +64,7 @@ use midnight_zk_stdlib::{
     MidnightPK, MidnightVK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
 };
 use midnight_zkir::IrSource;
-use midnight_zkir::ir_instructions::aggregate::trivial_accumulator;
+use midnight_zkir::ir_instructions::accumulate::trivial_accumulator;
 use midnight_zkir::ir_instructions::verify_proof::{
     verify_proof_incircuit, verify_proof_offcircuit,
 };
@@ -214,12 +214,12 @@ async fn blake2b_transcript_proof_is_rejected() {
     );
 }
 
-/// Aggregating the accumulator the inner proof carries checks it, not just the
+/// Accumulating the accumulator the inner proof carries checks it, not just the
 /// one from verifying it.
 ///
 /// The recursive proof carries an accumulator for a proof of `BOGUS` checked
 /// against `GOOD`. Everything is well-formed, so only the pairing on the
-/// aggregated accumulator can reject it. The same proof, with the carried
+/// accumulated accumulator can reject it. The same proof, with the carried
 /// accumulator ignored, is accepted.
 #[actix_rt::test]
 #[ignore = "slow: two levels of in-circuit verification"]
@@ -711,7 +711,7 @@ async fn verify_proof_carrying_nothing() {
 }
 
 /// An inner proof carrying an accumulator of its own, which the circuit
-/// aggregates into the one it exposes.
+/// accumulates into the one it exposes.
 #[actix_rt::test]
 #[ignore = "slow: two levels of in-circuit verification"]
 async fn verify_proof_carrying_an_accumulator() {
@@ -738,7 +738,7 @@ async fn verify_proof_carrying_an_accumulator() {
         .write(&mut blob, SerdeFormat::Processed)
         .expect("recursive blob");
     let ir = witnessed_outer_ir(&blob, instance.len(), true);
-    // One accumulator, as without a carried one: they are aggregated.
+    // One accumulator, as without a carried one: they are accumulated.
     assert_eq!(ir.accumulator_count(), 1);
     let (pk, vk) = outer_keygen(&ir, "carrying an accumulator, guarded").await;
 
@@ -747,13 +747,13 @@ async fn verify_proof_carrying_an_accumulator() {
     let preimage = witnessed_outer_preimage(true, &proof, &instance);
     let (outer_proof, pis) = outer_prove(&ir, pk.clone(), &preimage, &mut rng).await;
 
-    // What the circuit exposed is the aggregate, not the recursive proof's own
+    // What the circuit exposed is the accumulation, not the recursive proof's own
     // accumulator: the carried one is in there too.
     let own = verify_proof_offcircuit(&blob, &instance, &proof, true)
         .expect("the recursive proof's own accumulator");
     assert_ne!(
         outer_proof.accumulators[0], own,
-        "the carried accumulator must have been aggregated in"
+        "the carried accumulator must have been accumulated in"
     );
 
     // One pairing, discharging both.
@@ -1116,7 +1116,7 @@ fn instance_operands(pis: &[Fq]) -> Vec<String> {
 ///
 /// If `carries`, the inner proof also carries an accumulator as the tail of its
 /// instance. It is witnessed as `%c_{i}`, and its encoding is that tail, so the
-/// inner proof is verified against the very accumulator aggregated in.
+/// inner proof is verified against the very accumulator accumulated in.
 fn verify_and_expose(
     i: usize,
     guard: &str,
@@ -1146,7 +1146,7 @@ fn verify_and_expose(
         r#"{{ "op": "private_input", "guard": "{guard}", "type": "Accumulator", "output": "%c_{i}" }},
            {{ "op": "encode", "input": "%c_{i}", "outputs": [{encoded}] }},
            {verify},
-           {{ "op": "aggregate_accumulators", "inputs": ["%a_{i}", "%c_{i}"], "output": "%d_{i}" }},
+           {{ "op": "accumulate", "inputs": ["%a_{i}", "%c_{i}"], "output": "%d_{i}" }},
            {{ "op": "verify_accumulator", "input": "%d_{i}" }}"#,
         encoded = encoded.join(", "),
         verify = verify(&instance),

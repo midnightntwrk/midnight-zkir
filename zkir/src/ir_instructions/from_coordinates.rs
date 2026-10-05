@@ -43,30 +43,26 @@ pub fn from_coordinates_offcircuit(x: &IrValue, y: &IrValue) -> Result<IrValue, 
             .map(<JubjubExtended as CofactorGroup>::into_subgroup)
             .and_then(Into::<Option<JubjubSubgroup>>::into)
             .map(JubjubPoint)
-            .ok_or(anyhow::anyhow!(
-                "Cannot build a Jubjub point from ({x}, {y})",
-            )),
+            .ok_or_else(|| anyhow::anyhow!("Cannot build a Jubjub point from ({x}, {y})")),
 
         (Secp256k1Base(x), Secp256k1Base(y)) => k256::K256::from_xy(*x, *y)
             .map(Secp256k1Point)
-            .ok_or(anyhow::anyhow!(
-                "Cannot build a Secp256k1Point point from ({x:?}, {y:?})",
-            )),
+            .ok_or_else(|| {
+                anyhow::anyhow!("Cannot build a Secp256k1Point point from ({x:?}, {y:?})")
+            }),
 
-        (Secp256r1Base(x), Secp256r1Base(y)) => {
-            p256::P256::from_xy(*x, *y)
-                .map(Secp256r1Point)
-                .ok_or(anyhow::anyhow!(
-                    "Cannot build a Secp256r1Point point from ({x:?}, {y:?})",
-                ))
-        }
+        (Secp256r1Base(x), Secp256r1Base(y)) => p256::P256::from_xy(*x, *y)
+            .map(Secp256r1Point)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Cannot build a Secp256r1Point point from ({x:?}, {y:?})")
+            }),
 
         (Curve25519Base(x), Curve25519Base(y)) => curve25519::Curve25519::from_xy(*x, *y)
             .and_then(|p| curve25519::Curve25519Subgroup::from_edwards(p.0))
             .map(Curve25519Point)
-            .ok_or(anyhow::anyhow!(
-                "Cannot build a Curve25519Point point from ({x:?}, {y:?})",
-            )),
+            .ok_or_else(|| {
+                anyhow::anyhow!("Cannot build a Curve25519Point point from ({x:?}, {y:?})")
+            }),
 
         (x, y) => Err(anyhow::anyhow!(
             "Unsupported `from_coordinates` on ({:?}, {:?})",

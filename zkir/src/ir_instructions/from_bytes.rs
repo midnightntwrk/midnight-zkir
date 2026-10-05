@@ -227,7 +227,7 @@ pub fn from_bytes_incircuit(
                 <&[u8; 32]>::try_from(v.as_slice())
                     .ok()
                     .and_then(|b| Option::from(JubjubSubgroup::from_bytes(b)))
-                    .unwrap_or(JubjubSubgroup::generator())
+                    .unwrap_or_else(JubjubSubgroup::generator)
             });
             let curve = std_lib.jubjub();
             // `assign` constrains the point to the prime-order subgroup.
@@ -243,7 +243,7 @@ pub fn from_bytes_incircuit(
                 <[u8; 33]>::try_from(v.as_slice())
                     .ok()
                     .and_then(|b| Option::from(k256::K256::from_bytes(&b.into())))
-                    .unwrap_or(k256::K256::generator())
+                    .unwrap_or_else(k256::K256::generator)
             });
             let curve = std_lib.secp256k1();
             let p = curve.assign(layouter, value)?;
@@ -266,7 +266,7 @@ pub fn from_bytes_incircuit(
                 <[u8; 33]>::try_from(v.as_slice())
                     .ok()
                     .and_then(|b| Option::from(p256::P256::from_bytes(&b.into())))
-                    .unwrap_or(p256::P256::generator())
+                    .unwrap_or_else(p256::P256::generator)
             });
             let curve = std_lib.p256();
             let p = curve.assign(layouter, value)?;
@@ -296,7 +296,7 @@ pub fn from_bytes_incircuit(
                     .ok()
                     .and_then(|b| Option::from(curve25519::Curve25519::from_bytes(b)))
                     .and_then(|p: curve25519::Curve25519| Curve25519Subgroup::from_edwards(p.0))
-                    .unwrap_or(Curve25519Subgroup::generator())
+                    .unwrap_or_else(Curve25519Subgroup::generator)
             });
             std_lib
                 .curve25519()

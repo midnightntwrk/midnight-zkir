@@ -11,7 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::decider::accumulator_pis;
+use crate::ir_instructions::accumulate::{
+    accumulate_incircuit, accumulate_offcircuit, check_collapsed,
+};
 use crate::ir_instructions::add::{add_incircuit, add_offcircuit};
 use crate::ir_instructions::assign::assign_incircuit;
 use crate::ir_instructions::assign_constant::assign_constant_incircuit;
@@ -48,6 +50,7 @@ use midnight_circuits::instructions::{
     PublicInputInstructions, RangeCheckInstructions, ZeroInstructions,
 };
 use midnight_circuits::types::{AssignedBit, AssignedByte, AssignedNative, InnerValue};
+use midnight_circuits::verifier::AssignedAccumulator;
 use midnight_curves::{JubjubSubgroup, curve25519, k256, p256};
 use midnight_proofs::{
     circuit::{Layouter, Value},
@@ -59,13 +62,13 @@ use serialize::{Deserializable, Serializable, VecExt, tagged_deserialize, tagged
 use sha2::{Sha256, Sha512};
 use sha3::{Digest, Keccak256};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use transient_crypto::curve::outer;
 use transient_crypto::curve::{FR_BITS, FR_BYTES_STORED, Fr};
 use transient_crypto::fab::{AlignmentExt, ValueReprAlignedValue};
 use transient_crypto::hash::{hash_to_curve, transient_commit, transient_hash};
 use transient_crypto::proofs::{
-    InnerProofWitness, ProofPreimage, ProvingError, accumulator_pi_len,
+    DeferredAccumulator, InnerProofWitness, ProofPreimage, ProvingError, accumulator_pi_len,
 };
 
 /// The raw data prior to proving. Note that this should *not* be considered part of the public
@@ -232,109 +235,6 @@ fn fab_decode_to_bytes_atom(
 }
 
 impl IrSource {
-    /// Number of `verify_proof` instructions in this circuit.
-    pub fn accumulator_count(&self) -> usize {
-        self.instructions
-            .iter()
-            .filter(|i| matches!(i, I::VerifyProof { .. }))
-            .count()
-    }
-
-    /// Rejects a malformed `inner_proof` / `verify_proof` pairing: each
-    /// `verify_proof` must name a proof an earlier `inner_proof` bound, under
-    /// the same guard, and each bound proof must be used exactly once.
-    ///
-    /// Guards must match because each instruction reads only its own: guarded
-    /// off, `inner_proof` binds an empty blob that a `verify_proof` guarded on
-    /// would then fail to verify.
-    fn validate_inner_proofs(&self) -> anyhow::Result<()> {
-        // Guard the proof was bound under, and how many `VerifyProof`s took it.
-        let mut bound: HashMap<&Identifier, (&Operand, usize)> = HashMap::new();
-
-        for ins in self.instructions.iter() {
-            match ins {
-                I::InnerProof { guard, output } => {
-                    let rebound = bound.insert(output, (guard, 0)).is_some();
-                    if rebound {
-                        bail!("`inner_proof` rebinds {}", output.0);
-                    }
-                }
-                I::VerifyProof { guard, proof, .. } => {
-                    let (bound_guard, consumers) = bound.get_mut(proof).ok_or_else(|| {
-                        anyhow!(
-                            "`verify_proof` names {}, which no preceding `inner_proof` binds",
-                            proof.0
-                        )
-                    })?;
-                    if *bound_guard != guard {
-                        bail!(
-                            "`verify_proof` on {} is guarded differently to the `inner_proof` \
-                             that bound it",
-                            proof.0
-                        );
-                    }
-                    *consumers += 1;
-                    if *consumers > 1 {
-                        bail!("{} is verified more than once", proof.0);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Walk the instructions again rather than the map, so the first
-        // offender is reported in instruction order.
-        for ins in self.instructions.iter() {
-            if let I::InnerProof { output, .. } = ins
-                && bound[output].1 == 0
-            {
-                bail!(
-                    "`inner_proof` binds {}, which no `verify_proof` uses",
-                    output.0
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Indexes [`IrSource::verify_proof_vks`] by digest, so each `VerifyProof`
-    /// can resolve its key by `vk_hash`.
-    ///
-    /// Rejects a duplicated blob, and one left unused by every instruction, so
-    /// the side-table stays a canonical set of the keys the circuit needs.
-    fn resolve_verify_proof_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
-        let mut vk_map: HashMap<Vec<u8>, &[u8]> = HashMap::new();
-        for vk_blob in self.verify_proof_vks.iter() {
-            let vk_hash = Sha256::digest(vk_blob).to_vec();
-            if vk_map.insert(vk_hash, vk_blob).is_some() {
-                bail!("duplicate verifying key in `verify_proof_vks`");
-            }
-        }
-
-        let mut used = HashSet::new();
-        for ins in self.instructions.iter() {
-            if let I::VerifyProof { vk_hash, .. } = ins {
-                if !vk_map.contains_key(vk_hash) {
-                    bail!(
-                        "no verifying key in `verify_proof_vks` for vk_hash 0x{}",
-                        const_hex::encode(vk_hash)
-                    );
-                }
-                used.insert(vk_hash);
-            }
-        }
-
-        if used.len() != vk_map.len() {
-            bail!(
-                "`verify_proof_vks` holds {} keys but only {} are used",
-                vk_map.len(),
-                used.len()
-            );
-        }
-        Ok(vk_map)
-    }
-
     /// Performs a non-ZK run of a circuit, to ensure that constraints hold, and
     /// to produce a public input vector, and public input skip information.
     pub(crate) fn preprocess(
@@ -342,6 +242,7 @@ impl IrSource {
         preimage: &ProofPreimage,
     ) -> Result<Preprocessed, ProvingError> {
         self.validate_inner_proofs()?;
+        self.validate_accumulators()?;
         let verify_proof_vks = self.resolve_verify_proof_vks()?;
 
         let mut memory: HashMap<Identifier, IrValue> = HashMap::new();
@@ -371,7 +272,7 @@ impl IrSource {
 
         // ZKIR's own public inputs (binding input, communications commitment,
         // impact fields) are collected in `pis` here. The deferred accumulator
-        // PIs emitted by `verify_proof` are collected separately in `acc_pis`;
+        // PIs emitted by `verify_accumulator` are collected separately in `acc_pis`;
         // the two are stitched together at the end as `acc_pis ++ pis`,
         // matching the layout the in-circuit `circuit()` synthesis produces.
         let mut acc_pis: Vec<Fr> = Vec::new();
@@ -980,6 +881,7 @@ impl IrSource {
                     vk_hash,
                     instance,
                     proof,
+                    output,
                 } => {
                     let guard = resolve_operand_bool(&memory, guard)?;
                     let instance = instance
@@ -1000,9 +902,19 @@ impl IrSource {
                     })?;
 
                     let acc = verify_proof_offcircuit(vk_blob, &instance, proof, guard)?;
-                    for f in accumulator_pis(&acc) {
-                        acc_pis.push(Fr(f));
-                    }
+                    memory.insert(output.clone(), IrValue::Accumulator(acc));
+                }
+                I::Accumulate { inputs, output } => {
+                    let accs = inputs
+                        .iter()
+                        .map(|op| DeferredAccumulator::try_from(resolve_operand(&memory, op)?))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let acc = accumulate_offcircuit(&accs)?;
+                    memory.insert(output.clone(), IrValue::Accumulator(acc));
+                }
+                I::VerifyAccumulator { input } => {
+                    let acc = DeferredAccumulator::try_from(resolve_operand(&memory, input)?)?;
+                    acc_pis.extend(acc.as_public_input().into_iter().map(Fr));
                 }
                 I::InnerProof { guard, output } => {
                     // One witness per instruction, whatever the guard, so both
@@ -1106,6 +1018,8 @@ impl Relation for IrSource {
     ) -> Result<(), Error> {
         self.validate_inner_proofs()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
+        self.validate_accumulators()
+            .map_err(|e| Error::Synthesis(e.to_string()))?;
         let verify_proof_vks = self
             .resolve_verify_proof_vks()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
@@ -1204,11 +1118,11 @@ impl Relation for IrSource {
 
         // ZKIR's own public inputs (binding input, communications commitment,
         // impact fields) are collected here and constrained *after* the
-        // instruction loop. midnight-zk's `verify_proof` chip constrains its
+        // instruction loop. `verify_accumulator` constrains its
         // accumulator PIs inline as it runs, so deferring ZKIR's own constrains
         // makes the accumulator block naturally occupy the first
         // `N * accumulator_pi_len()` slots of the public-input vector (where
-        // `N` is the number of `verify_proof` instructions) with ZKIR's own
+        // `N` is the number of `verify_accumulator` instructions) with ZKIR's own
         // PIs following.
         let mut zkir_pi_cells: Vec<AssignedNative<outer::Scalar>> = Vec::new();
         // Offset into `preproc.pis` where ZKIR's own PIs begin: the accumulator
@@ -1793,6 +1707,7 @@ impl Relation for IrSource {
                     vk_hash,
                     instance,
                     proof,
+                    output,
                 } => {
                     let guard: AssignedBit<_> = {
                         let guard = resolve_operand(std, layouter, &memory, guard)?;
@@ -1818,7 +1733,7 @@ impl Relation for IrSource {
                         ))
                     })?;
 
-                    verify_proof_incircuit(
+                    let acc = verify_proof_incircuit(
                         std,
                         layouter,
                         vk_blob,
@@ -1826,6 +1741,23 @@ impl Relation for IrSource {
                         proof_value,
                         &guard,
                     )?;
+                    mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
+                }
+                I::Accumulate { inputs, output } => {
+                    let accs = inputs
+                        .iter()
+                        .map(|op| resolve_operand(std, layouter, &memory, op)?.try_into())
+                        .collect::<Result<Vec<_>, Error>>()?;
+                    let acc = accumulate_incircuit(std, layouter, &accs)?;
+                    mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
+                }
+                // Constrained inline, so the accumulator block leads the
+                // public inputs (see `acc_offset`).
+                I::VerifyAccumulator { input } => {
+                    let acc: AssignedAccumulator<_> =
+                        resolve_operand(std, layouter, &memory, input)?.try_into()?;
+                    check_collapsed(&acc)?;
+                    std.verifier().constrain_as_public_input(layouter, &acc)?;
                 }
                 // The guard is off-circuit bookkeeping only: `preprocess` already
                 // resolved it, binding the empty blob where it was off, and
@@ -1915,15 +1847,21 @@ impl Relation for IrSource {
             self.instructions.iter().any(match_predicate)
         };
 
+        let involves_accumulators = involves_types(&[IrType::Accumulator])
+            || involves_instructions(&|op| {
+                matches!(
+                    op,
+                    I::VerifyProof { .. } | I::Accumulate { .. } | I::VerifyAccumulator { .. }
+                )
+            });
+
         ZkStdLibArch {
             jubjub: involves_types(&[IrType::JubjubPoint, IrType::JubjubScalar])
                 || involves_instructions(&|op| matches!(op, I::HashToCurve { .. })),
             poseidon: self.do_communications_commitment
+                || involves_accumulators
                 || involves_instructions(&|op| {
-                    matches!(
-                        op,
-                        I::TransientHash { .. } | I::HashToCurve { .. } | I::VerifyProof { .. }
-                    )
+                    matches!(op, I::TransientHash { .. } | I::HashToCurve { .. })
                 }),
             sha2_256: involves_instructions(&|op| matches!(op, I::PersistentHash { .. })),
             sha2_512: involves_instructions(&|op| matches!(op, I::Sha512 { .. })),
@@ -1941,7 +1879,7 @@ impl Relation for IrSource {
                 IrType::Secp256r1Base,
                 IrType::Secp256r1Scalar,
             ]),
-            bls12_381: involves_instructions(&|op| matches!(op, I::VerifyProof { .. })),
+            bls12_381: involves_accumulators,
             curve25519: involves_types(&[
                 IrType::Curve25519Point,
                 IrType::Curve25519Base,

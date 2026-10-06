@@ -25,9 +25,10 @@ use midnight_curves::{Fr as JubjubFr, JubjubExtended, curve25519, k256, p256};
 use midnight_proofs::{circuit::Layouter, plonk::Error};
 use midnight_zk_stdlib::ZkStdLib;
 use transient_crypto::curve::Fr;
+use transient_crypto::proofs::DeferredAccumulator;
 
 use crate::{
-    ir_instructions::F,
+    ir_instructions::{F, accumulate::check_collapsed},
     ir_types::{BYTES_PER_FIELD_ELEMENT, CircuitValue, IrType, IrValue},
 };
 use anyhow::anyhow;
@@ -78,6 +79,8 @@ pub fn encode_offcircuit(value: &IrValue) -> Vec<IrValue> {
         IrValue::Curve25519Scalar(s) => {
             AssignedField::<F, curve25519::Scalar, MEP>::as_public_input(s)
         }
+
+        IrValue::Accumulator(acc) => acc.as_public_input(),
     };
     encoded
         .into_iter()
@@ -142,6 +145,11 @@ pub fn encode_incircuit(
         }
         CircuitValue::Curve25519Scalar(s) => {
             (std_lib.curve25519().scalar_field_chip()).as_public_input(layouter, s)
+        }
+
+        CircuitValue::Accumulator(acc) => {
+            check_collapsed(acc)?;
+            std_lib.verifier().as_public_input(layouter, acc)
         }
     }?;
     Ok(encoded.into_iter().map(CircuitValue::Native).collect())
@@ -235,6 +243,11 @@ pub fn decode_offcircuit(encoded: &[Fr], val_t: &IrType) -> Result<IrValue, anyh
             AssignedField::<F, curve25519::Scalar, MEP>::from_public_input(&encoded)
                 .map(IrValue::Curve25519Scalar)
         }
+
+        // Rejects an accumulator that is not collapsed.
+        IrType::Accumulator => {
+            DeferredAccumulator::from_public_input(&encoded).map(IrValue::Accumulator)
+        }
     }
     .ok_or_else(|| anyhow!("Failed to decode {encoded:?} as {val_t:?}"))?;
 
@@ -287,6 +300,31 @@ mod tests {
     use rand_chacha::rand_core::OsRng;
 
     use super::*;
+
+    /// A collapsed accumulator with random points on both sides, which does
+    /// not satisfy the pairing invariant.
+    fn random_accumulator() -> IrValue {
+        use midnight_circuits::verifier::{Accumulator, Msm, SelfEmulation};
+        use midnight_curves::Bls12;
+        use midnight_proofs::poly::kzg::params::ParamsKZG;
+        use transient_crypto::proofs::InnerSelfEmulation as S;
+        let side = || {
+            Msm::<S>::new(
+                &[<S as SelfEmulation>::C::random(OsRng)],
+                &[F::ONE],
+                &Default::default(),
+            )
+        };
+        let acc = Accumulator::new(side(), side());
+        // Any SRS will do: two independent random points pair with negligible
+        // probability whatever the trapdoor.
+        let params = ParamsKZG::<Bls12>::unsafe_setup(1, OsRng).verifier_params();
+        assert!(
+            !acc.check(&params, &Default::default()),
+            "a random accumulator must not satisfy the pairing invariant"
+        );
+        IrValue::Accumulator(DeferredAccumulator::new(&acc).unwrap())
+    }
 
     /// The off-circuit encoding of `value`, as raw field elements.
     fn raw(value: &IrValue) -> Vec<Fr> {
@@ -367,11 +405,29 @@ mod tests {
             IrValue::Curve25519Point(Curve25519Subgroup::generator()),
             IrValue::Curve25519Base(-curve25519::Fp::ONE),
             IrValue::Curve25519Scalar(-<curve25519::Scalar as Field>::ONE),
+            random_accumulator(),
         ];
         for value in values {
             let val_t = value.get_type();
             assert_eq!(raw(&value).len(), val_t.encoded_len(), "{val_t:?}");
         }
+    }
+
+    #[test]
+    fn encode_decode_accumulator_roundtrip() {
+        for value in [IrValue::default(&IrType::Accumulator), random_accumulator()] {
+            let encoded = raw(&value);
+            assert_eq!(encoded.len(), IrType::Accumulator.encoded_len());
+            let decoded = decode_offcircuit(&encoded, &IrType::Accumulator).unwrap();
+            assert_eq!(decoded, value);
+        }
+    }
+
+    #[test]
+    fn decode_rejects_non_collapsed_accumulator() {
+        let mut encoded = raw(&random_accumulator());
+        *encoded.last_mut().unwrap() = Fr::from(2u64);
+        assert!(decode_offcircuit(&encoded, &IrType::Accumulator).is_err());
     }
 
     // The curve and emulated-field encodings are the ones where `decode` is not

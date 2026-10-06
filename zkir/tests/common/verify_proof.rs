@@ -34,7 +34,6 @@ use midnight_zk_stdlib::{
     MidnightPK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
 };
 use midnight_zkir::IrSource;
-use midnight_zkir::decider::{DeciderKind, serialize_vk};
 use midnight_zkir::ir::IrMinorVersion;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -191,7 +190,7 @@ impl Relation for SingleScalarRelation {
     }
 }
 
-/// Keygen for `R` at its own `k`, returning the VK as a `None`-decider blob.
+/// Keygen for `R` at its own `k`, returning the VK as a `Processed` blob.
 pub async fn inner_setup_for<R: Relation + Default>(
     label: &str,
 ) -> (ParamsProver, MidnightPK<R>, Vec<u8>) {
@@ -217,7 +216,10 @@ pub async fn inner_setup_at<R: Relation + Default>(
     );
     let inner_pk = setup_pk(&relation, &inner_vk);
 
-    let vk_blob = serialize_vk(&inner_vk, DeciderKind::None).expect("serialize inner vk");
+    let mut vk_blob = Vec::new();
+    inner_vk
+        .write(&mut vk_blob, SerdeFormat::Processed)
+        .expect("serialize inner vk");
 
     (inner_srs, inner_pk, vk_blob)
 }

@@ -19,6 +19,7 @@ use midnight_proofs::{
 };
 use midnight_zk_stdlib::ZkStdLib;
 use transient_crypto::curve::Fr;
+use transient_crypto::proofs::DeferredAccumulator;
 
 use crate::{
     ir_instructions::F,
@@ -150,5 +151,19 @@ pub fn assign_incircuit(
             .scalar_field_chip()
             .assign_many(layouter, &convert_values::<curve25519::Scalar>(values)?)
             .map(|xs| xs.into_iter().map(CircuitValue::Curve25519Scalar).collect()),
+
+        IrType::Accumulator => convert_values::<DeferredAccumulator>(values)?
+            .into_iter()
+            .map(|acc| {
+                std_lib
+                    .verifier()
+                    .assign_collapsed_accumulator(
+                        layouter,
+                        &[],
+                        acc.map(|acc| acc.to_accumulator()),
+                    )
+                    .map(CircuitValue::Accumulator)
+            })
+            .collect(),
     }
 }

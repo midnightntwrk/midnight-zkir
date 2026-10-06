@@ -14,13 +14,13 @@
 //! Fixtures for exercising `verify_proof` from crates that hold no prover of
 //! their own.
 
-use crate::decider::{DeciderKind, serialize_vk};
 use midnight_circuits::hash::poseidon::PoseidonState;
 use midnight_circuits::instructions::{AssignmentInstructions, PublicInputInstructions};
 use midnight_circuits::types::AssignedNative;
 use midnight_curves::Fq;
 use midnight_proofs::circuit::{Layouter, Value};
 use midnight_proofs::plonk;
+use midnight_proofs::utils::SerdeFormat;
 use midnight_zk_stdlib::{Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk};
 use rand::{CryptoRng, Rng};
 use transient_crypto::curve::Fr;
@@ -81,9 +81,6 @@ pub struct InnerProof {
 /// [`TranscriptHash`](transient_crypto::proofs::TranscriptHash) — Blake2b —
 /// whereas the in-circuit verifier reads a Poseidon one, which is why this
 /// lives here rather than in the calling crate's test.
-///
-/// The relation defers no accumulator of its own, so the entry is tagged
-/// [`DeciderKind::None`].
 pub async fn echo_proof(
     params: &impl ParamsProverProvider,
     value: Fr,
@@ -93,8 +90,10 @@ pub async fn echo_proof(
     let vk = setup_vk(srs.as_ref(), &Echo);
     let pk = setup_pk(&Echo, &vk);
     let proof = prove::<Echo, PoseidonState<Fq>>(srs.as_ref(), &pk, &Echo, &value.0, (), rng)?;
+    let mut vk_blob = Vec::new();
+    vk.write(&mut vk_blob, SerdeFormat::Processed)?;
     Ok(InnerProof {
-        vk_blob: serialize_vk(&vk, DeciderKind::None)?,
+        vk_blob,
         proof,
         instance: vec![value],
     })

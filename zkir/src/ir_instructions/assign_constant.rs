@@ -11,12 +11,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use midnight_circuits::instructions::AssignmentInstructions;
-use midnight_proofs::{circuit::Layouter, plonk::Error};
+use midnight_circuits::instructions::{
+    AssertionInstructions, AssignmentInstructions, PublicInputInstructions,
+};
+use midnight_proofs::{
+    circuit::{Layouter, Value},
+    plonk::Error,
+};
 use midnight_zk_stdlib::ZkStdLib;
 
 use crate::{
-    ir_instructions::F,
+    ir_instructions::{F, accumulate::check_collapsed},
     ir_types::{CircuitValue, IrValue},
 };
 
@@ -94,5 +99,25 @@ pub fn assign_constant_incircuit(
         IrValue::Curve25519Scalar(s) => (std_lib.curve25519().scalar_field_chip())
             .assign_fixed(layouter, *s)
             .map(CircuitValue::Curve25519Scalar),
+
+        // midnight-circuits has no fixed assignment of an accumulator, so it is
+        // witnessed and its encoding pinned to the constant one.
+        IrValue::Accumulator(acc) => {
+            let verifier = std_lib.verifier();
+            let assigned = verifier.assign_collapsed_accumulator(
+                layouter,
+                &[],
+                Value::known(acc.to_accumulator()),
+            )?;
+            check_collapsed(&assigned)?;
+            for (wire, constant) in verifier
+                .as_public_input(layouter, &assigned)?
+                .iter()
+                .zip(acc.as_public_input())
+            {
+                std_lib.assert_equal_to_fixed(layouter, wire, constant)?;
+            }
+            Ok(CircuitValue::Accumulator(assigned))
+        }
     }
 }

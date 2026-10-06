@@ -47,8 +47,7 @@ pub struct IrSource {
     pub instructions: Arc<Vec<Instruction>>,
     /// Full verifying keys for the circuit's `VerifyProof` instructions.
     /// Each entry is
-    /// [`serialize_vk`](crate::decider::serialize_vk)'s
-    /// output: the declared `DeciderKind`'s tag byte, then the `MidnightVK`.
+    /// `MidnightVK::write(SerdeFormat::Processed)`'s output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verify_proof_vks: Vec<Vec<u8>>,
 }
@@ -218,8 +217,8 @@ impl Zkir for IrSource {
         let proof = prove::<_, TranscriptHash>(params_k.as_ref(), &pk, self, &pis, preproc, rng)?;
 
         // Split the produced PI vector at `N * accumulator_pi_len()`: the head is
-        // the accumulator block (one entry per `verify_proof` instruction, in
-        // instruction order) carried on the proof, the tail is the external
+        // the accumulator block (one entry per `verify_accumulator` instruction,
+        // in instruction order) carried on the proof, the tail is the external
         // statement returned to the caller.
         let acc_len = accumulator_pi_len();
         let n_accs = self.accumulator_count();
@@ -228,7 +227,7 @@ impl Zkir for IrSource {
             .chunks(acc_len)
             .map(|c| {
                 DeferredAccumulator::from_public_input(c).ok_or_else(|| {
-                    anyhow::anyhow!("`verify_proof` exposed a malformed accumulator")
+                    anyhow::anyhow!("`verify_accumulator` exposed a malformed accumulator")
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -558,6 +557,9 @@ pub enum Instruction {
     ///  - Curve25519Point:  4 outputs
     ///  - Curve25519Base:   2 outputs
     ///  - Curve25519Scalar: 2 outputs
+    ///
+    /// An Accumulator encodes as its public inputs, each side's point then
+    /// scalar (`accumulator_pi_len()` outputs).
     Encode {
         /// The value to encode
         input: Operand,
@@ -1402,9 +1404,13 @@ pub enum Instruction {
         /// The output variable name (a `Bytes(len)`)
         output: Identifier,
     },
-    /// Verifies an inner Plonk proof in-circuit, under a guard condition.
+    //
+    // ==================== END OF ZKIR 3.1 INSTRUCTIONS ====================
+    //
+    /// Partially verifies an inner Plonk proof in-circuit, under a guard
+    /// condition, deferring the final pairing to an `Accumulator`.
     ///
-    /// If `guard` is `false`, a trivial proof is verified in-circuit.
+    /// If `guard` is `false`, the output is the trivial accumulator.
     /// A guarded-off instruction still consumes one `InnerProof` binding,
     /// but never depends on its contents.
     ///
@@ -1414,7 +1420,10 @@ pub enum Instruction {
     /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
     /// the `InnerProof` instruction that produces `proof`.
     ///
-    /// No outputs.
+    /// WARNING: the proof is only verified once its accumulator reaches a
+    /// `VerifyAccumulator`, possibly through `Accumulate`.
+    ///
+    /// One output, the accumulator.
     VerifyProof {
         /// The boolean condition under which the inner proof is verified. A
         /// variable reference, or a `0x`-hex immediate for a constant guard.
@@ -1426,6 +1435,8 @@ pub enum Instruction {
         instance: Vec<Operand>,
         /// The proof to verify, as bound by an `InnerProof` instruction.
         proof: Identifier,
+        /// The output variable name (an `Accumulator`).
+        output: Identifier,
     },
     /// Off-circuit (preprocessing):
     /// Binds `output` to the next inner proof from
@@ -1451,8 +1462,26 @@ pub enum Instruction {
         /// The output variable name.
         output: Identifier,
     },
+    /// Accumulates two or more `Accumulator`s into one, which pairs iff all of
+    /// them do.
+    ///
+    /// One output, the resulting accumulator.
+    Accumulate {
+        /// The accumulators to accumulate.
+        inputs: Vec<Operand>,
+        /// The output variable name (an `Accumulator`).
+        output: Identifier,
+    },
+    /// Exposes an `Accumulator` as public inputs, deferring its pairing to the
+    /// outer verifier.
+    ///
+    /// No outputs.
+    VerifyAccumulator {
+        /// The accumulator to verify.
+        input: Operand,
+    },
     //
-    // ==================== END OF ZKIR 3.1 INSTRUCTIONS ====================
+    // ==================== END OF ZKIR 4 INSTRUCTIONS ====================
     //
 }
 tag_enforcement_test!(Instruction);
@@ -1560,7 +1589,7 @@ impl IrSource {
             .chunks(acc_len)
             .map(|c| {
                 DeferredAccumulator::from_public_input(c).ok_or_else(|| {
-                    anyhow::anyhow!("`verify_proof` exposed a malformed accumulator")
+                    anyhow::anyhow!("`verify_accumulator` exposed a malformed accumulator")
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;

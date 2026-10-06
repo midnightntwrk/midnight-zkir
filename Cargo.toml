@@ -23,15 +23,18 @@ panic = "abort"
 
 # base-crypto 1.1.0, serialize 1.2.0, and transient-crypto 4.0.0 are not yet
 # published to crates.io; resolve them from the midnight-ledger repository, at
-# the merge commit of midnight-ledger PR #738 (verify_proof / inner_proofs).
+# the head of midnight-ledger PR #791 (`DeferredAccumulator::new`) until it merges.
 # They all come from the same rev so their interlinked path dependencies unify
 # to a single source.
 [patch.crates-io]
-midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "a3b17c6a5ef632790f78e7b44bef5e4ab232dbf4" }
-midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "a3b17c6a5ef632790f78e7b44bef5e4ab232dbf4" }
-midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "a3b17c6a5ef632790f78e7b44bef5e4ab232dbf4" }
+midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "045303666dbb869a8e9444a3b0b8e6789e1c3f8d" }
+midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "045303666dbb869a8e9444a3b0b8e6789e1c3f8d" }
+midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "045303666dbb869a8e9444a3b0b8e6789e1c3f8d" }
 # Not needed for the build itself, but without this transient-crypto pulls
 # storage-core (and its macro crates) from crates.io at the same name+version
 # as the git copies above, and nix's importCargoLock cannot vendor the same
 # name+version from two sources.
-midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "a3b17c6a5ef632790f78e7b44bef5e4ab232dbf4" }
+midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "045303666dbb869a8e9444a3b0b8e6789e1c3f8d" }
+# `AssignedAccumulator::is_collapsed` is not released yet; resolve it from the
+# head of midnight-zk PR #553 until it ships.
+midnight-circuits = { git = "https://github.com/midnightntwrk/midnight-zk", rev = "604f739269aaff06ed14a7447779d70840d7bd70" }

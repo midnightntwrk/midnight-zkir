@@ -1,0 +1,449 @@
+{
+  "version": {
+    "major": 3,
+    "minor": 0
+  },
+  "do_communications_commitment": true,
+  "inputs": [
+    {
+      "name": "%x.0",
+      "type": "Scalar<BLS12-381>"
+    },
+    {
+      "name": "%b.1",
+      "type": "Scalar<BLS12-381>"
+    }
+  ],
+  "outputs": [
+    "Scalar<BLS12-381>"
+  ],
+  "instructions": [
+    {
+      "op": "constrain_to_boolean",
+      "val": "%b.1"
+    },
+    {
+      "op": "copy",
+      "output": "%tmp.2",
+      "val": "%x.0"
+    },
+    {
+      "op": "constrain_bits",
+      "val": "%tmp.2",
+      "bits": 16
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x0e",
+        "%tmp.2"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x0f",
+        "%tmp.2"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x10",
+        "0x01",
+        "0x01",
+        "0x01",
+        "0x01"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x11",
+        "0x01",
+        "0x01",
+        "-0x02",
+        "%tmp.2"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x91"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x0e",
+        "%tmp.2"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x03"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x10",
+        "0x01",
+        "0x01",
+        "0x02",
+        "%tmp.2"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x19"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "cond_select",
+      "output": "%t.3",
+      "bit": "%b.1",
+      "a": "0x00",
+      "b": "0x01"
+    },
+    {
+      "op": "div_mod_power_of_two",
+      "outputs": [
+        "%q.4",
+        "%r.5"
+      ],
+      "val": "%x.0",
+      "bits": 16
+    },
+    {
+      "op": "test_eq",
+      "output": "%t1.6",
+      "a": "%q.4",
+      "b": "0x00"
+    },
+    {
+      "op": "cond_select",
+      "output": "%t2.7",
+      "bit": "%b.1",
+      "a": "%t1.6",
+      "b": "0x01"
+    },
+    {
+      "op": "assert",
+      "cond": "%t2.7"
+    },
+    {
+      "op": "copy",
+      "output": "%tmp.8",
+      "val": "%r.5"
+    },
+    {
+      "op": "impact",
+      "guard": "%b.1",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%b.1",
+      "inputs": [
+        "0x0e",
+        "%tmp.8"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%b.1",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "mul",
+      "output": "%t.9",
+      "a": "%x.0",
+      "b": "%x.0"
+    },
+    {
+      "op": "public_input",
+      "type": "Scalar<BLS12-381>",
+      "output": "%t.10",
+      "guard": "%b.1"
+    },
+    {
+      "op": "impact",
+      "guard": "%b.1",
+      "inputs": [
+        "0x30"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%b.1",
+      "inputs": [
+        "0x50",
+        "0x01",
+        "0x01",
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%b.1",
+      "inputs": [
+        "0x0d",
+        "0x01",
+        "0x08",
+        "%t.10"
+      ]
+    },
+    {
+      "op": "mul",
+      "output": "%t.11",
+      "a": "%t.9",
+      "b": "%t.10"
+    },
+    {
+      "op": "cond_select",
+      "output": "%t2.12",
+      "bit": "%b.1",
+      "a": "0x01",
+      "b": "%t1.6"
+    },
+    {
+      "op": "assert",
+      "cond": "%t2.12"
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x0e",
+        "%tmp.8"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x0e",
+        "%tmp.8"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x00"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x10",
+        "0x01",
+        "0x01",
+        "-0x02",
+        "%x.0"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x11",
+        "0x01",
+        "0x01",
+        "-0x02",
+        "%x.0"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x91"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x00"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x10",
+        "0x01",
+        "0x01",
+        "-0x02",
+        "0x02"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x11",
+        "0x01",
+        "0x01",
+        "-0x02",
+        "%x.0"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0x91"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.3",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "cond_select",
+      "output": "%t.13",
+      "bit": "%b.1",
+      "a": "%t.11",
+      "b": "%t.9"
+    },
+    {
+      "op": "output",
+      "vals": [
+        "%t.13"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,245 @@
+{
+  "version": {
+    "major": 3,
+    "minor": 0
+  },
+  "do_communications_commitment": true,
+  "inputs": [
+    {
+      "name": "%x.0",
+      "type": "Scalar<BLS12-381>"
+    }
+  ],
+  "outputs": [
+    "Scalar<BLS12-381>"
+  ],
+  "instructions": [
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x70",
+        "0x01",
+        "0x01",
+        "0x00"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0x0e",
+        "0x01"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "0x01",
+      "inputs": [
+        "0xa1"
+      ]
+    },
+    {
+      "op": "test_eq",
+      "output": "%t.1",
+      "a": "%x.0",
+      "b": "0x00"
+    },
+    {
+      "op": "cond_select",
+      "output": "%t.2",
+      "bit": "%t.1",
+      "a": "0x00",
+      "b": "0x01"
+    },
+    {
+      "op": "public_input",
+      "type": "Scalar<BLS12-381>",
+      "output": "%t.3",
+      "guard": "%t.2"
+    },
+    {
+      "op": "public_input",
+      "type": "Scalar<BLS12-381>",
+      "output": "%t.4",
+      "guard": "%t.2"
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x30"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x50",
+        "0x01",
+        "0x01",
+        "0x01"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x0c",
+        "0x01",
+        "0x20",
+        "%t.3",
+        "%t.4"
+      ]
+    },
+    {
+      "op": "neg",
+      "output": "%neg.5",
+      "a": "0x01"
+    },
+    {
+      "op": "add",
+      "output": "%t.6",
+      "a": "%x.0",
+      "b": "%neg.5"
+    },
+    {
+      "op": "private_input",
+      "type": "Scalar<BLS12-381>",
+      "output": "%t.7",
+      "guard": "%t.2"
+    },
+    {
+      "op": "constrain_to_boolean",
+      "val": "%t.7"
+    },
+    {
+      "op": "private_input",
+      "type": "Scalar<BLS12-381>",
+      "output": "%cc-rand.8",
+      "guard": "%t.2"
+    },
+    {
+      "op": "private_input",
+      "type": "Scalar<BLS12-381>",
+      "output": "%ep-mod.9",
+      "guard": "%t.2"
+    },
+    {
+      "op": "constrain_bits",
+      "val": "%ep-mod.9",
+      "bits": 8
+    },
+    {
+      "op": "private_input",
+      "type": "Scalar<BLS12-381>",
+      "output": "%ep-div.10",
+      "guard": "%t.2"
+    },
+    {
+      "op": "constrain_bits",
+      "val": "%ep-div.10",
+      "bits": 248
+    },
+    {
+      "op": "transient_hash",
+      "output": "%comm.11",
+      "inputs": [
+        "%cc-rand.8",
+        "%t.6",
+        "%t.7"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x40"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x80",
+        "0x01",
+        "0x01",
+        "0x03"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x30"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x04"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x10",
+        "0x01",
+        "0x03",
+        "0x20",
+        "0x20",
+        "-0x02",
+        "%t.3",
+        "%t.4",
+        "%ep-mod.9",
+        "%ep-div.10",
+        "%comm.11"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x17",
+        "0xa0"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x10",
+        "0x00"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0xa2"
+      ]
+    },
+    {
+      "op": "impact",
+      "guard": "%t.2",
+      "inputs": [
+        "0x40"
+      ]
+    },
+    {
+      "op": "cond_select",
+      "output": "%t.12",
+      "bit": "%t.1",
+      "a": "0x00",
+      "b": "%t.7"
+    },
+    {
+      "op": "output",
+      "vals": [
+        "%t.12"
+      ]
+    }
+  ]
+}

@@ -1282,11 +1282,10 @@ impl Relation for IrSource {
                     let modulus: AssignedNative<_> = modulus_val.try_into()?;
 
                     use group::ff::Field;
-                    let two_pow_bits = outer::Scalar::from(2).pow([*bits as u64]);
-                    let result_val = divisor
-                        .value()
-                        .zip(modulus.value())
-                        .map(|(d, m)| *d * two_pow_bits + *m);
+                    let result_val = divisor.value().zip(modulus.value()).map(|(d, m)| {
+                        let two_pow_bits = outer::Scalar::from(2).pow([*bits as u64]);
+                        *d * two_pow_bits + *m
+                    });
                     let result = std.assign(layouter, result_val)?;
 
                     // The canonical bits of `result` are below the field modulus. Splitting

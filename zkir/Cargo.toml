@@ -12,6 +12,11 @@ path = "src/main.rs"
 required-features = ["binary"]
 
 [features]
+default = ["sow-26q3"]
+# 2026-Q3 functionality: the Secp256r1 and Curve25519 types and everything
+# ZKIR 3.1 added. Ledger 9 builds without it, so its proof server and verifier
+# refuse such IR; ledger 10 onwards turns it on.
+sow-26q3 = []
 binary = [
   "dep:log",
   "dep:tracing-subscriber",
@@ -80,5 +85,6 @@ proptest-derive = { version = "0.8", optional = true }
 
 
 [dev-dependencies]
-midnight-zkir = { path = ".", features = ["proptest"] }
+# No default features, so `--no-default-features` really drops `sow-26q3`.
+midnight-zkir = { path = ".", default-features = false, features = ["proptest"] }
 actix-rt = "^2.9.0"

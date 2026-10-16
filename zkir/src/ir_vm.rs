@@ -230,6 +230,7 @@ impl IrSource {
         &self,
         preimage: &ProofPreimage,
     ) -> Result<Preprocessed, ProvingError> {
+        self.check_feature_gates()?;
         let mut memory: HashMap<Identifier, IrValue> = HashMap::new();
 
         let mut idx = 0;
@@ -1676,6 +1677,8 @@ impl Relation for IrSource {
 
     fn read_relation<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let raw: Vec<u8> = Deserializable::deserialize(reader, 0)?;
-        tagged_deserialize(&mut &raw[..])
+        let ir: Self = tagged_deserialize(&mut &raw[..])?;
+        ir.check_feature_gates()?;
+        Ok(ir)
     }
 }

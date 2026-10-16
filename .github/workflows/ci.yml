@@ -170,6 +170,10 @@ jobs:
       - name: Build and Test (default features)
         run: nix develop -c cargo nextest run --release --profile ci
 
+      # Ledger 9 builds without `sow-26q3`; prove the gate holds there.
+      - name: Test the sow-26q3 gate (feature off)
+        run: nix develop -c cargo nextest run --release -p midnight-zkir --no-default-features -E 'test(sow_26q3)'
+
       - name: Upload Artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

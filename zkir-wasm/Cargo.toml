@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 transient-crypto = { version = "3.0.0", package = "midnight-transient-crypto" }
-zkir = { path = "../zkir", package = "midnight-zkir" }
+zkir = { path = "../zkir", package = "midnight-zkir", default-features = false }
 serialize = { version = "1.0.0", package = "midnight-serialize" }
 
 rand = { version = "^0.8.4", features = ["getrandom"] }
@@ -29,6 +29,8 @@ wasm-opt = ['-O', '--enable-reference-types', '-g']
 wasm-opt = ['-O', '--enable-reference-types']
 
 [features]
+default = ["sow-26q3"]
+sow-26q3 = ["zkir/sow-26q3"]
 proptest = ["zkir/proptest"]
 
 [lints]

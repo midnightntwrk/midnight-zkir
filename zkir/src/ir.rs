@@ -51,6 +51,87 @@ pub struct IrSource {
 tag_enforcement_test!(IrSource);
 tag_enforcement_test!(ProverKey<IrSource>);
 
+/// 2026-Q3 functionality met by a build without the `sow-26q3` feature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureGateError(String);
+
+impl std::fmt::Display for FeatureGateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} is 2026-Q3 functionality, which this build of midnight-zkir excludes: \
+             rebuild midnight-zkir with the `sow-26q3` feature (ledger 10 onwards), \
+             or compile the contract to ZKIR 3.0 without Secp256r1 or Curve25519",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for FeatureGateError {}
+
+impl From<FeatureGateError> for io::Error {
+    fn from(e: FeatureGateError) -> Self {
+        io::Error::new(io::ErrorKind::InvalidData, e)
+    }
+}
+
+/// ZKIR 3.0 (2026-Q2) types: discriminants `0..=12` minus Secp256r1 and
+/// Curve25519, which landed in that layout during Q3.
+fn is_zkir_3_0_type(t: &IrType) -> bool {
+    matches!(
+        t,
+        IrType::Native
+            | IrType::Bytes(32)
+            | IrType::JubjubPoint
+            | IrType::JubjubScalar
+            | IrType::Secp256k1Point
+            | IrType::Secp256k1Base
+            | IrType::Secp256k1Scalar
+    )
+}
+
+/// Instructions up to the ZKIR 3.0 end-marker in [`Instruction`].
+fn is_zkir_3_0_instruction(op: &Instruction) -> bool {
+    use Instruction::*;
+    matches!(
+        op,
+        Encode { .. }
+            | Assert { .. }
+            | CondSelect { .. }
+            | ConstrainBits { .. }
+            | ConstrainEq { .. }
+            | ConstrainToBoolean { .. }
+            | Copy { .. }
+            | Impact { .. }
+            | EcMul { .. }
+            | EcMulGenerator { .. }
+            | HashToCurve { .. }
+            | IntoCoordinates { .. }
+            | FromCoordinates { .. }
+            | IntoBytes32 { .. }
+            | FromBytes32 { .. }
+            | ReverseBytes { .. }
+            | Bytes32IntoLowHigh { .. }
+            | Bytes32FromLowHigh { .. }
+            | DivModPowerOfTwo { .. }
+            | ReconstituteField { .. }
+            | TransientHash { .. }
+            | PersistentHash { .. }
+            | Keccak256 { .. }
+            | TestEq { .. }
+            | Add { .. }
+            | Mul { .. }
+            | Neg { .. }
+            | Inv { .. }
+            | Not { .. }
+            | LessThan { .. }
+            | JubjubScalarFromNative { .. }
+            | PublicInput { .. }
+            | PrivateInput { .. }
+            | Output { .. }
+    )
+}
+
 #[cfg_attr(feature = "proptest", derive(Arbitrary))]
 #[derive(
     Clone,
@@ -113,6 +194,7 @@ impl Zkir for IrSource {
         params: &impl ParamsProverProvider,
     ) -> Result<transient_crypto::proofs::VerifierKey, anyhow::Error> {
         use midnight_zk_stdlib::setup_vk;
+        self.check_feature_gates()?;
         Ok(transient_crypto::proofs::VerifierKey::from(setup_vk(
             params.get_params(self.k()).await?.as_ref(),
             self,
@@ -124,6 +206,7 @@ impl Zkir for IrSource {
         params: &impl ParamsProverProvider,
     ) -> Result<(ProverKey<Self>, transient_crypto::proofs::VerifierKey), anyhow::Error> {
         use midnight_zk_stdlib::{setup_pk, setup_vk};
+        self.check_feature_gates()?;
         let vk = setup_vk(params.get_params(self.k()).await?.as_ref(), self);
         let pk = setup_pk(self, &vk);
         Ok((
@@ -133,7 +216,9 @@ impl Zkir for IrSource {
     }
 
     fn load_ir_from_tagged(reader: impl Read + std::io::Seek) -> std::io::Result<Self> {
-        serialize::tagged_deserialize(reader)
+        let ir: Self = serialize::tagged_deserialize(reader)?;
+        ir.check_feature_gates()?;
+        Ok(ir)
     }
 
     fn load_prover_key_from_tagged(
@@ -1323,7 +1408,9 @@ impl IrSource {
                             "version".into(),
                             serde_json::Value::Number(ver.minor.into()),
                         );
-                        Ok(serde_json::from_value(serde_json::Value::Object(obj))?)
+                        let ir: Self = serde_json::from_value(serde_json::Value::Object(obj))?;
+                        ir.check_feature_gates()?;
+                        Ok(ir)
                     }
                     SerdeVersion { major, minor } => Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1336,6 +1423,46 @@ impl IrSource {
                 "Expected a JSON object",
             )),
         }
+    }
+
+    /// Refuses 2026-Q3 functionality unless built with the `sow-26q3` feature.
+    ///
+    /// Types enter a circuit only through its inputs, outputs and the
+    /// type-carrying instructions (the same premise as `used_chips`), so
+    /// checking those plus the instruction set is complete. Both checks fail
+    /// closed: a type or instruction not known to be ZKIR 3.0 is refused.
+    pub fn check_feature_gates(&self) -> Result<(), FeatureGateError> {
+        if cfg!(feature = "sow-26q3") {
+            return Ok(());
+        }
+        let check_type = |t: &IrType, at: &dyn Fn() -> String| {
+            if is_zkir_3_0_type(t) {
+                Ok(())
+            } else {
+                Err(FeatureGateError(format!("type `{t:?}` in {}", at())))
+            }
+        };
+        for input in &self.inputs {
+            check_type(&input.val_t, &|| format!("input `{}`", input.name.0))?;
+        }
+        for (n, t) in self.outputs.iter().enumerate() {
+            check_type(t, &|| format!("output {n}"))?;
+        }
+        for (n, op) in self.instructions.iter().enumerate() {
+            let at = || format!("instruction #{n}");
+            match op {
+                Instruction::PublicInput { val_t, .. }
+                | Instruction::PrivateInput { val_t, .. }
+                | Instruction::FromBytes32 { val_t, .. } => check_type(val_t, &at)?,
+                _ if !is_zkir_3_0_instruction(op) => {
+                    let debug = format!("{op:?}");
+                    let name = debug.split([' ', '(', '{']).next().unwrap_or(&debug);
+                    return Err(FeatureGateError(format!("instruction `{name}` ({})", at())));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Intended for testing only. This method enables fully controlling the inputs passed to

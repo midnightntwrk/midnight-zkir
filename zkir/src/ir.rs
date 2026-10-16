@@ -66,8 +66,9 @@ tag_enforcement_test!(ProverKey<IrSource>);
 #[non_exhaustive]
 pub enum IrMinorVersion {
     V0,
-    #[default]
     V1,
+    #[default]
+    V2,
 }
 
 impl Zkir for IrSource {
@@ -1316,7 +1317,7 @@ impl IrSource {
                 match ver {
                     SerdeVersion {
                         major: 3,
-                        minor: 0..=1,
+                        minor: 0..=2,
                     } => {
                         obj.insert(
                             "version".into(),

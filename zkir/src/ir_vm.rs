@@ -39,6 +39,10 @@ use crate::ir_instructions::prepare_verification::{
 };
 use crate::ir_instructions::select::{select_incircuit, select_offcircuit};
 use crate::ir_instructions::to_bytes::{to_bytes_incircuit, to_bytes_offcircuit};
+use crate::ir_instructions::unbound_vk::{
+    assign_unbound_vk_incircuit, assign_unbound_vk_offcircuit, bind_vk_incircuit,
+    bind_vk_offcircuit,
+};
 use crate::ir_types::{BYTES_PER_FIELD_ELEMENT, CircuitValue, IrType, IrValue, MAX_BYTES_LEN};
 
 use super::ir::{Identifier, Instruction as I, IrSource, Operand};
@@ -862,6 +866,19 @@ impl IrSource {
                     let value = decode_offcircuit(encoding, val_t)?;
                     memory.insert(output.clone(), value);
                 }
+                I::AssignUnboundVk { k, output } => {
+                    let (vk, nb_elements) = assign_unbound_vk_offcircuit(
+                        &preimage.private_transcript[private_transcript_outputs_idx..],
+                        *k,
+                    )?;
+                    private_transcript_outputs_idx += nb_elements;
+                    memory.insert(output.clone(), vk);
+                }
+                I::BindVk { vk, hash } => {
+                    let vk = resolve_operand(&memory, vk)?;
+                    let hash = resolve_operand(&memory, hash)?;
+                    bind_vk_offcircuit(vk, hash)?;
+                }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {
                         bail!(
@@ -1168,6 +1185,15 @@ impl Relation for IrSource {
             Ok(())
         };
 
+        // The value a witness-introducing instruction gave `id` in `preprocess`.
+        let witnessed = |id: &Identifier| {
+            witness.as_ref().map_with_result(|preproc| {
+                preproc.memory.get(id).cloned().ok_or_else(|| {
+                    Error::Synthesis(format!("Output {:?} not found in witness memory", id))
+                })
+            })
+        };
+
         let mut pi_idx: usize = 0;
         pi_push(&mut pi_idx, &mut zkir_pi_cells, binding_input)?;
 
@@ -1386,15 +1412,7 @@ impl Relation for IrSource {
                     val_t,
                     output,
                 } => {
-                    let value = witness.as_ref().map_with_result(|preproc| {
-                        preproc.memory.get(output).cloned().ok_or_else(|| {
-                            Error::Synthesis(format!(
-                                "Output {:?} not found in witness memory",
-                                output
-                            ))
-                        })
-                    })?;
-
+                    let value = witnessed(output)?;
                     mem_insert(
                         output.clone(),
                         assign_incircuit(std, layouter, val_t, &[value])?[0].clone(),
@@ -1702,6 +1720,15 @@ impl Relation for IrSource {
                         .map_err(|e| Error::Synthesis(e.to_string()))?;
                     let assigned = assign_constant_incircuit(std, layouter, &value)?;
                     mem_insert(output.clone(), assigned, &mut memory)?;
+                }
+                I::AssignUnboundVk { k, output } => {
+                    let vk = assign_unbound_vk_incircuit(std, layouter, *k, witnessed(output)?)?;
+                    mem_insert(output.clone(), vk, &mut memory)?;
+                }
+                I::BindVk { vk, hash } => {
+                    let vk = resolve_operand(std, layouter, &memory, vk)?;
+                    let hash = resolve_operand(std, layouter, &memory, hash)?;
+                    bind_vk_incircuit(std, layouter, vk, hash)?;
                 }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {

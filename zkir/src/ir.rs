@@ -1386,6 +1386,39 @@ pub enum Instruction {
         /// The accumulator to verify.
         input: Operand,
     },
+    /// Witnesses the verifying key of an inner circuit of size `2^k` with
+    /// every chip of the standard library enabled (see
+    /// [`crate::ir_instructions::unbound_vk::INNER_ARCH`]).
+    ///
+    /// Off-circuit (preprocessing):
+    /// Reads the key from the private transcript outputs, serialized
+    /// (`VerifyingKey::write`, `Processed` format) and packed as a `Bytes`
+    /// value. Errors if the key is not of size `2^k`.
+    ///
+    /// In-circuit:
+    /// The key is a free prover witness, which must be bound with `BindVk`
+    /// before it can be trusted.
+    ///
+    /// One output, the `UnboundVk`
+    AssignUnboundVk {
+        /// The (constant) log2 of the size of the inner circuit
+        k: u8,
+        /// The output variable name
+        output: Identifier,
+    },
+    /// Binds `vk` to `hash`, asserting that `hash` is the hash of `vk`.
+    ///
+    /// WARNING: this only guarantees that `vk` matches `hash`. It is up to the
+    /// caller to guarantee the integrity of `hash`, e.g. by making it a public
+    /// input or a constant.
+    ///
+    /// No outputs
+    BindVk {
+        /// The `UnboundVk` to bind
+        vk: Operand,
+        /// The expected hash, a `Native`
+        hash: Operand,
+    },
     //
     // ==================== END OF ZKIR 4 INSTRUCTIONS ====================
     //

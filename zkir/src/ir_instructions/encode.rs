@@ -81,6 +81,9 @@ pub fn encode_offcircuit(value: &IrValue) -> Vec<IrValue> {
         }
 
         IrValue::Accumulator(acc) => acc.as_public_input(),
+
+        // No encoding, see `encode_incircuit`.
+        IrValue::UnboundVk(_) => vec![],
     };
     encoded
         .into_iter()
@@ -150,6 +153,10 @@ pub fn encode_incircuit(
         CircuitValue::Accumulator(acc) => {
             check_collapsed(acc)?;
             acc.in_circuit_as_public_input(layouter, std_lib.bls12_381())
+        }
+
+        CircuitValue::UnboundVk(_) => {
+            Err(Error::Synthesis("an UnboundVk cannot be encoded".into()))
         }
     }?;
     Ok(encoded.into_iter().map(CircuitValue::Native).collect())
@@ -248,6 +255,8 @@ pub fn decode_offcircuit(encoded: &[Fr], val_t: &IrType) -> Result<IrValue, anyh
         IrType::Accumulator => {
             DeferredAccumulator::from_public_input(&encoded).map(IrValue::Accumulator)
         }
+
+        IrType::UnboundVk => None,
     }
     .ok_or_else(|| anyhow!("Failed to decode {encoded:?} as {val_t:?}"))?;
 

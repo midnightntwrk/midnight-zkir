@@ -229,7 +229,10 @@ pub fn prove_inner_for<R: Relation + Default>(
     inner_pk: &MidnightPK<R, KZG>,
     inner_srs: &ParamsProver,
     rng: &mut ChaCha20Rng,
-) -> Vec<u8> {
+) -> Vec<u8>
+where
+    R::Error: std::fmt::Debug,
+{
     let t = Instant::now();
     let proof = prove::<R, PoseidonState<Fq>, KZG>(
         inner_srs.as_ref(),

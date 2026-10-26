@@ -123,5 +123,7 @@ pub fn assign_constant_incircuit(
             }
             Ok(CircuitValue::Accumulator(assigned))
         }
+
+        IrValue::UnboundVk(_) => Err(Error::Synthesis("an UnboundVk cannot be a constant".into())),
     }
 }

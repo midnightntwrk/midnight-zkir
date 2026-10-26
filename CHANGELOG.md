@@ -27,6 +27,9 @@ ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.
 - Add the `Accumulator` type and the `accumulate` and `verify_accumulator`
   instructions. `prepare_verification` outputs an accumulator, which must
   reach exactly one `verify_accumulator` (possibly through `accumulate`).
+- Add the `UnboundVk` type and the `AssignUnboundVk` and `BindVk`
+  instructions, which witness the verifying key of an inner circuit with every
+  chip enabled and bind it to a trusted hash.
 
 ### Dependencies
 

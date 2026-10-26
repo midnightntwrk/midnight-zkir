@@ -32,3 +32,4 @@ pub mod neg;
 pub mod prepare_verification;
 pub mod select;
 pub mod to_bytes;
+pub mod unbound_vk;

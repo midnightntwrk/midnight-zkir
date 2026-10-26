@@ -74,8 +74,6 @@ pub fn accumulate_incircuit(
     // `accumulate` hashes the public-input form of its inputs.
     accs.iter().try_for_each(check_collapsed)?;
     let bls = std.bls12_381();
-    // TODO: if we use truncated challenges it may make sense to collapse before
-    // accumulating.
     let mut acc = std.verifier().accumulate(layouter, accs)?;
     acc.collapse(layouter, bls, bls.scalar_field_chip())?;
     Ok(acc)
@@ -124,6 +122,32 @@ impl<'a> AccumulatorUses<'a> {
     }
 }
 
+impl I {
+    /// The accumulator this instruction produces, if any.
+    fn accumulator_output(&self) -> Option<&Identifier> {
+        match self {
+            I::VerifyProof { output, .. }
+            | I::Accumulate { output, .. }
+            | I::PrivateInput {
+                val_t: IrType::Accumulator,
+                output,
+                ..
+            }
+            | I::PublicInput {
+                val_t: IrType::Accumulator,
+                output,
+                ..
+            }
+            | I::LoadConstant {
+                val_t: IrType::Accumulator,
+                output,
+                ..
+            } => Some(output),
+            _ => None,
+        }
+    }
+}
+
 impl IrSource {
     /// Number of `verify_accumulator` instructions in this circuit.
     pub fn accumulator_count(&self) -> usize {
@@ -138,28 +162,14 @@ impl IrSource {
         let mut accs = AccumulatorUses::default();
         for ins in self.instructions.iter() {
             match ins {
-                I::VerifyProof { output, .. }
-                | I::PrivateInput {
-                    val_t: IrType::Accumulator,
-                    output,
-                    ..
-                }
-                | I::PublicInput {
-                    val_t: IrType::Accumulator,
-                    output,
-                    ..
-                }
-                | I::LoadConstant {
-                    val_t: IrType::Accumulator,
-                    output,
-                    ..
-                } => accs.produce(output)?,
-                I::Accumulate { inputs, output } => {
-                    inputs.iter().try_for_each(|op| accs.consume(op))?;
-                    accs.produce(output)?;
+                I::Accumulate { inputs, .. } => {
+                    inputs.iter().try_for_each(|op| accs.consume(op))?
                 }
                 I::VerifyAccumulator { input } => accs.consume(input)?,
                 _ => {}
+            }
+            if let Some(output) = ins.accumulator_output() {
+                accs.produce(output)?;
             }
         }
         accs.finish()

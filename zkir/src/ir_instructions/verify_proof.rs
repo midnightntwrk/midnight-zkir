@@ -101,7 +101,7 @@ pub fn verify_proof_incircuit(
     std: &ZkStdLib,
     layouter: &mut impl Layouter<outer::Scalar>,
     vk_blob: &[u8],
-    instance: &[&[AssignedNative<outer::Scalar>]],
+    instance: &[AssignedNative<outer::Scalar>],
     proof: Value<Vec<u8>>,
     guard: &AssignedBit<outer::Scalar>,
 ) -> Result<AssignedAccumulator<S>, Error> {
@@ -112,13 +112,6 @@ pub fn verify_proof_incircuit(
     let verifier = std.verifier();
     let bls = std.bls12_381();
     let scalar_chip = bls.scalar_field_chip();
-
-    // Exactly one instance set, matching the off-circuit `&[&[instance]]`.
-    if instance.len() != 1 {
-        return Err(Error::Synthesis(
-            "`verify_proof` supports exactly one instance set".into(),
-        ));
-    }
 
     // Only `transcript_repr` enters the transcript, but it cannot disagree
     // with the key: `MidnightVK::read` never reads it, `VerifyingKey::from_parts`
@@ -143,7 +136,7 @@ pub fn verify_proof_incircuit(
     // committed instances), mirroring the off-circuit `&[&[C::identity()]]`.
     let committed = [bls.assign_fixed(layouter, <S as SelfEmulation>::C::identity())?];
 
-    let mut acc = verifier.prepare(layouter, &assigned_vk, &committed, instance, proof)?;
+    let mut acc = verifier.prepare(layouter, &assigned_vk, &committed, &[instance], proof)?;
     acc.resolve_fixed_bases(&assigned_bases);
     AssignedAccumulator::scale_by_bit(layouter, scalar_chip, guard, &mut acc)?;
     acc.collapse(layouter, bls, scalar_chip)?;

@@ -985,7 +985,7 @@ impl Relation for RecursiveRelation {
         // The deferred accumulator is the rest of our public inputs. Nothing
         // here is guarded, so the guard is a fixed one.
         let on: AssignedBit<Fq> = std_lib.assign_fixed(layouter, true)?;
-        let acc = verify_proof_incircuit(std_lib, layouter, &self.inner_vk, &[&[x]], witness, &on)?;
+        let acc = verify_proof_incircuit(std_lib, layouter, &self.inner_vk, &[x], witness, &on)?;
         std_lib.verifier().constrain_as_public_input(layouter, &acc)
     }
 

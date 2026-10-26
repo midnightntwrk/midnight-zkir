@@ -486,6 +486,11 @@ impl IrSource {
                 }
                 I::Copy { val, output } => {
                     let val = resolve_operand(&memory, val)?;
+                    if let IrValue::Accumulator(_) = val {
+                        bail!(
+                            "`copy` cannot take an accumulator: each one must be consumed exactly once"
+                        );
+                    }
                     memory.insert(output.clone(), val);
                 }
                 I::ConstrainToBoolean { val } => drop(resolve_operand_bool(&memory, val)?),
@@ -1219,6 +1224,12 @@ impl Relation for IrSource {
                 }
                 I::Copy { val, output } => {
                     let val = resolve_operand(std, layouter, &memory, val)?;
+                    if let CircuitValue::Accumulator(_) = val {
+                        return Err(Error::Synthesis(
+                            "`copy` cannot take an accumulator: each one must be consumed exactly once"
+                                .into(),
+                        ));
+                    }
                     mem_insert(output.clone(), val, &mut memory)?;
                 }
                 I::Impact { guard, inputs } => {
@@ -1737,7 +1748,7 @@ impl Relation for IrSource {
                         std,
                         layouter,
                         vk_blob,
-                        &[assigned_instance.as_slice()],
+                        &assigned_instance,
                         proof_value,
                         &guard,
                     )?;

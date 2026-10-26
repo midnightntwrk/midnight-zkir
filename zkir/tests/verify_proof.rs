@@ -413,6 +413,17 @@ fn every_accumulator_is_verified_exactly_once() {
     let self_fed = r#"{ "op": "accumulate", "inputs": ["%x", "%y"], "output": "%x" }"#;
     let err = expect_check_err(&ir(self_fed), preimage(0));
     assert!(err.contains("not an unconsumed accumulator"), "got: {err}");
+
+    // `copy` cannot alias an accumulator: the alias could shadow another
+    // pending one and drop its proof.
+    let copied = r#"{ "op": "private_input", "guard": "0x00", "type": "Accumulator", "output": "%c" },
+        { "op": "copy", "val": "%c", "output": "%d" },
+        { "op": "verify_accumulator", "input": "%c" }"#;
+    let err = expect_check_err(&ir(copied), preimage(0));
+    assert!(
+        err.contains("`copy` cannot take an accumulator"),
+        "got: {err}"
+    );
 }
 
 /// The accumulator instructions round-trip through JSON and binary.

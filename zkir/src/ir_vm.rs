@@ -242,7 +242,7 @@ impl IrSource {
         preimage: &ProofPreimage,
     ) -> Result<Preprocessed, ProvingError> {
         self.validate_inner_proofs()?;
-        self.validate_accumulators()?;
+        self.check_accumulator_lifecycle()?;
         let verify_proof_vks = self.resolve_verify_proof_vks()?;
 
         let mut memory: HashMap<Identifier, IrValue> = HashMap::new();
@@ -1023,7 +1023,7 @@ impl Relation for IrSource {
     ) -> Result<(), Error> {
         self.validate_inner_proofs()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
-        self.validate_accumulators()
+        self.check_accumulator_lifecycle()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
         let verify_proof_vks = self
             .resolve_verify_proof_vks()

@@ -89,6 +89,7 @@ struct AccumulatorUses<'a> {
 }
 
 impl<'a> AccumulatorUses<'a> {
+    /// Records a new accumulator.
     fn produce(&mut self, id: &'a Identifier) -> anyhow::Result<()> {
         if !self.produced.insert(id) {
             bail!("accumulator {} is rebound", id.0);
@@ -97,6 +98,7 @@ impl<'a> AccumulatorUses<'a> {
         Ok(())
     }
 
+    /// Records the single use of an accumulator.
     fn consume(&mut self, op: &Operand) -> anyhow::Result<()> {
         let pos = match op {
             Operand::Variable(id) => self.pending.iter().position(|p| *p == id),
@@ -111,6 +113,7 @@ impl<'a> AccumulatorUses<'a> {
         Ok(())
     }
 
+    /// Rejects an accumulator left unconsumed.
     fn finish(&self) -> anyhow::Result<()> {
         if let Some(id) = self.pending.first() {
             bail!(
@@ -158,8 +161,16 @@ impl IrSource {
     }
 
     /// Rejects an accumulator that is dropped or used twice.
-    pub(crate) fn validate_accumulators(&self) -> anyhow::Result<()> {
+    pub(crate) fn check_accumulator_lifecycle(&self) -> anyhow::Result<()> {
         let mut accs = AccumulatorUses::default();
+        // An accumulator input is unchecked, like a witnessed one.
+        for input in self
+            .inputs
+            .iter()
+            .filter(|i| matches!(i.val_t, IrType::Accumulator))
+        {
+            accs.produce(&input.name)?;
+        }
         for ins in self.instructions.iter() {
             match ins {
                 I::Accumulate { inputs, .. } => {

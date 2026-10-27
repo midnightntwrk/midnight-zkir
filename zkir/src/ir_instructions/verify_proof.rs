@@ -157,6 +157,7 @@ struct InnerProofUses<'a> {
 }
 
 impl<'a> InnerProofUses<'a> {
+    /// Records an `inner_proof` binding.
     fn bind(&mut self, id: &'a Identifier, guard: &'a Operand) -> anyhow::Result<()> {
         if !self.bound.insert(id) {
             bail!("`inner_proof` rebinds {}", id.0);
@@ -165,6 +166,7 @@ impl<'a> InnerProofUses<'a> {
         Ok(())
     }
 
+    /// Records the `verify_proof` of a bound proof.
     fn verify(&mut self, proof: &Identifier, guard: &Operand) -> anyhow::Result<()> {
         let Some(pos) = self.pending.iter().position(|(id, _)| *id == proof) else {
             if self.bound.contains(proof) {
@@ -185,6 +187,7 @@ impl<'a> InnerProofUses<'a> {
         Ok(())
     }
 
+    /// Rejects a bound proof left unverified.
     fn finish(&self) -> anyhow::Result<()> {
         if let Some((id, _)) = self.pending.first() {
             bail!("`inner_proof` binds {}, which no `verify_proof` uses", id.0);

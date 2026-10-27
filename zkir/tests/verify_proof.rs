@@ -414,6 +414,11 @@ fn every_accumulator_is_verified_exactly_once() {
     let err = expect_check_err(&ir(self_fed), preimage(0));
     assert!(err.contains("not an unconsumed accumulator"), "got: {err}");
 
+    // An accumulator input must be verified too.
+    let input = load_ir(r#"{ "name": "%in", "type": "Accumulator" }"#, false, "");
+    let err = expect_check_err(&input, preimage(0));
+    assert!(err.contains("never verified"), "got: {err}");
+
     // `copy` cannot alias an accumulator: the alias could shadow another
     // pending one and drop its proof.
     let copied = r#"{ "op": "private_input", "guard": "0x00", "type": "Accumulator", "output": "%c" },

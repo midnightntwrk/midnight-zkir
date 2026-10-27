@@ -129,7 +129,7 @@ impl I {
     /// The accumulator this instruction produces, if any.
     fn accumulator_output(&self) -> Option<&Identifier> {
         match self {
-            I::VerifyProof { output, .. }
+            I::PrepareVerification { output, .. }
             | I::Accumulate { output, .. }
             | I::PrivateInput {
                 val_t: IrType::Accumulator,

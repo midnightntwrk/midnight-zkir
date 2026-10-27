@@ -45,7 +45,7 @@ pub struct IrSource {
     pub do_communications_commitment: bool,
     /// The sequence of instructions to run in-circuit
     pub instructions: Arc<Vec<Instruction>>,
-    /// Full verifying keys for the circuit's `VerifyProof` instructions.
+    /// Full verifying keys for the circuit's `PrepareVerification` instructions.
     /// Each entry is
     /// `MidnightVK::write(SerdeFormat::Processed)`'s output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1424,7 +1424,7 @@ pub enum Instruction {
     /// `VerifyAccumulator`, possibly through `Accumulate`.
     ///
     /// One output, the accumulator.
-    VerifyProof {
+    PrepareVerification {
         /// The boolean condition under which the inner proof is verified. A
         /// variable reference, or a `0x`-hex immediate for a constant guard.
         guard: Operand,
@@ -1452,7 +1452,7 @@ pub enum Instruction {
     /// constraints.
     ///
     /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
-    /// the `VerifyProof` instruction that consumes `output`.
+    /// the `PrepareVerification` instruction that consumes `output`.
     ///
     /// One output, the inner proof.
     InnerProof {

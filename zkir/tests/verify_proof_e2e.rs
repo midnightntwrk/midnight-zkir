@@ -11,12 +11,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! End-to-end tests for the `verify_proof` instruction. Unit tests are in
+//! End-to-end tests for the `prepare_verification` instruction. Unit tests are in
 //! `verify_proof.rs`.
 //!
 //! Most follow the same shape: prove an inner circuit with a Poseidon
 //! transcript, register its verifying key, then build an outer ZKIR circuit
-//! that binds the proof with `inner_proof`, verifies it with `verify_proof`,
+//! that binds the proof with `inner_proof`, verifies it with `prepare_verification`,
 //! and exposes the resulting accumulator with `verify_accumulator`. Verifying
 //! the outer proof runs the pairing check on the exposed accumulator.
 //!
@@ -133,7 +133,7 @@ async fn accumulator_is_carried_on_the_proof_not_the_statement() {
     assert_eq!(
         fixture.ir.accumulator_count(),
         1,
-        "a single verify_proof exposes a single accumulator"
+        "a single prepare_verification exposes a single accumulator"
     );
 
     let preimage = outer_preimage(inner_proof.clone());
@@ -143,7 +143,7 @@ async fn accumulator_is_carried_on_the_proof_not_the_statement() {
     assert_eq!(
         outer_proof.accumulators.len(),
         1,
-        "one verify_proof must carry exactly one accumulator block"
+        "one prepare_verification must carry exactly one accumulator block"
     );
     assert_eq!(
         outer_pis,
@@ -348,7 +348,7 @@ async fn corrupted_proof_is_rejected() {
     );
 }
 
-/// Guarded off, `verify_proof` exposes the trivial accumulator whatever the
+/// Guarded off, `prepare_verification` exposes the trivial accumulator whatever the
 /// witness bytes are.
 #[actix_rt::test]
 #[ignore = "slow: builds and proves a high-k outer circuit"]
@@ -376,7 +376,7 @@ async fn guarded_off_verify_proof_is_witness_independent() {
         assert_eq!(
             proof.accumulators.len(),
             1,
-            "{label}: a guarded-off verify_proof still occupies its block"
+            "{label}: a guarded-off prepare_verification still occupies its block"
         );
         assert_eq!(
             proof.accumulators[0].as_public_input(),
@@ -388,7 +388,7 @@ async fn guarded_off_verify_proof_is_witness_independent() {
     }
 }
 
-/// Two `verify_proof`s over different keys, with an `Impact` between them
+/// Two `prepare_verification`s over different keys, with an `Impact` between them
 /// guarded on or off, both verify, with accumulators intact and out of the
 /// statement.
 #[actix_rt::test]
@@ -409,10 +409,10 @@ async fn impact_between_two_proofs_leaves_accumulators_intact() {
     assert_eq!(
         ir.accumulator_count(),
         2,
-        "two verify_proof instructions expose two accumulators, Impact or not"
+        "two prepare_verification instructions expose two accumulators, Impact or not"
     );
 
-    let (pk, vk) = outer_keygen(&ir, "2 verify_proof, 1 interleaved impact").await;
+    let (pk, vk) = outer_keygen(&ir, "2 prepare_verification, 1 interleaved impact").await;
 
     for guard in [true, false] {
         println!("--- guard {} ---", if guard { "on" } else { "off" });
@@ -437,7 +437,7 @@ async fn impact_between_two_proofs_leaves_accumulators_intact() {
             outer_prove_with_skips(&ir, pk.clone(), &preimage, &mut rng).await;
 
         // Skips index the statement with accumulators removed, so
-        // `verify_proof` must not add any.
+        // `prepare_verification` must not add any.
         let expected_skips = if guard {
             vec![None]
         } else {
@@ -445,7 +445,7 @@ async fn impact_between_two_proofs_leaves_accumulators_intact() {
         };
         assert_eq!(
             skips, expected_skips,
-            "guard {guard}: one skip entry per Impact, none per verify_proof"
+            "guard {guard}: one skip entry per Impact, none per prepare_verification"
         );
 
         assert_eq!(
@@ -550,7 +550,7 @@ async fn proof_from_another_vk_is_rejected() {
     );
 }
 
-/// Two `verify_proof`s sharing one key, with one side-table entry, both verify.
+/// Two `prepare_verification`s sharing one key, with one side-table entry, both verify.
 #[actix_rt::test]
 #[ignore = "slow: builds and proves a high-k outer circuit"]
 async fn same_vk_verified_twice_is_accepted() {
@@ -687,7 +687,7 @@ async fn verify_proof_carrying_nothing() {
     assert_eq!(ir.accumulator_count(), 1);
     let (pk, vk) = outer_keygen(&ir, "carrying nothing, guarded").await;
 
-    // Proving already runs both `verify_proof` passes, so it fails if the inner
+    // Proving already runs both `prepare_verification` passes, so it fails if the inner
     // proof does not check out; verifying then discharges the accumulator that
     // verification deferred.
     let preimage = witnessed_outer_preimage(true, &inner.proof, &inner.pis);
@@ -778,7 +778,7 @@ async fn verify_proof_carrying_an_accumulator() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// One `inner_proof` / `verify_proof` pair behind the input guard `%g`.
+/// One `inner_proof` / `prepare_verification` pair behind the input guard `%g`.
 fn shared_guard_ir(inner: &InnerProof) -> IrSource {
     let instructions = format!(
         r#"{{ "op": "inner_proof", "guard": "%g", "output": "%p_0" }},
@@ -799,7 +799,7 @@ fn shared_guard_ir(inner: &InnerProof) -> IrSource {
     )
 }
 
-/// Two `verify_proof`s with an `Impact` between them, guarded by the circuit's
+/// Two `prepare_verification`s with an `Impact` between them, guarded by the circuit's
 /// one input `%v_0`.
 fn interleaved_ir(a: &InnerProof, b: &InnerProof) -> IrSource {
     let impact_operands = vec![format!(r#""0x{DISCLOSED:02x}""#); IMPACT_INPUTS].join(", ");
@@ -1104,14 +1104,14 @@ fn prove_inner(
     prove_inner_for::<RsaSignatureRelation>("rsa", instance, signature, inner_pk, inner_srs, rng)
 }
 
-/// `pis` as `verify_proof` instance operands. Immediates are little-endian hex.
+/// `pis` as `prepare_verification` instance operands. Immediates are little-endian hex.
 fn instance_operands(pis: &[Fq]) -> Vec<String> {
     pis.iter()
         .map(|f| format!("\"0x{}\"", const_hex::encode(Fr(*f).as_le_bytes())))
         .collect()
 }
 
-/// `verify_proof` of `%p_{i}` against `statement` under `guard`, then
+/// `prepare_verification` of `%p_{i}` against `statement` under `guard`, then
 /// `verify_accumulator` on its output.
 ///
 /// If `carries`, the inner proof also carries an accumulator as the tail of its
@@ -1126,7 +1126,7 @@ fn verify_and_expose(
 ) -> String {
     let verify = |instance: &[String]| {
         format!(
-            r#"{{ "op": "verify_proof", "guard": "{guard}", "vk_hash": "0x{hash}",
+            r#"{{ "op": "prepare_verification", "guard": "{guard}", "vk_hash": "0x{hash}",
                   "instance": [{ops}], "proof": "%p_{i}", "output": "%a_{i}" }}"#,
             hash = vk_hash_hex(vk_blob),
             ops = instance.join(", "),
@@ -1232,7 +1232,7 @@ async fn outer_setup_all(
     entries: &[(Vec<u8>, Vec<Fq>)],
 ) -> (IrSource, ProverKey<IrSource>, VerifierKey) {
     let ir = outer_ir_for_all(entries, false);
-    let label = format!("{} verify_proof instruction(s)", entries.len());
+    let label = format!("{} prepare_verification instruction(s)", entries.len());
     let (pk, vk) = outer_keygen(&ir, &label).await;
     (ir, pk, vk)
 }
@@ -1352,7 +1352,7 @@ fn outer_preimage_with(
 /// one), bind the proof, verify it.
 ///
 /// ZKIR has no instruction of its own for the inner instance: the fields are
-/// ordinary prover witnesses, and `verify_proof` just names the variables they
+/// ordinary prover witnesses, and `prepare_verification` just names the variables they
 /// were bound to. Here that is one guarded `private_input` per field, which is
 /// what a caller emits; the values travel in `ProofPreimage::private_transcript`.
 ///

@@ -881,7 +881,7 @@ impl IrSource {
                         outputs.push(value);
                     }
                 }
-                I::VerifyProof {
+                I::PrepareVerification {
                     guard,
                     vk_hash,
                     instance,
@@ -933,7 +933,7 @@ impl IrSource {
                         })?;
                     inner_proofs_idx += 1;
 
-                    // Guarded off, the witness is ignored: the `VerifyProof`
+                    // Guarded off, the witness is ignored: the `PrepareVerification`
                     // under the same guard discards the accumulator it produces.
                     let proof = if resolve_operand_bool(&memory, guard)? {
                         bytes.clone()
@@ -1713,7 +1713,7 @@ impl Relation for IrSource {
                         outputs.push(value);
                     }
                 }
-                I::VerifyProof {
+                I::PrepareVerification {
                     guard,
                     vk_hash,
                     instance,
@@ -1862,7 +1862,9 @@ impl Relation for IrSource {
             || involves_instructions(&|op| {
                 matches!(
                     op,
-                    I::VerifyProof { .. } | I::Accumulate { .. } | I::VerifyAccumulator { .. }
+                    I::PrepareVerification { .. }
+                        | I::Accumulate { .. }
+                        | I::VerifyAccumulator { .. }
                 )
             });
 

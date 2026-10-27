@@ -47,7 +47,7 @@ use transient_crypto::proofs::{
 /// The binding input every preimage carries, as public input 0.
 pub const BINDING_INPUT: u64 = 99;
 
-/// A VK blob's SHA-256, as hex without `0x`: the `vk_hash` `verify_proof` stores.
+/// A VK blob's SHA-256, as hex without `0x`: the `vk_hash` `prepare_verification` stores.
 pub fn vk_hash_hex(vk_blob: &[u8]) -> String {
     const_hex::encode(sha2::Sha256::digest(vk_blob))
 }

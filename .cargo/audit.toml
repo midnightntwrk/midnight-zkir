@@ -1,0 +1,8 @@
+[advisories]
+ignore = [
+    # crypto-bigint 0.5.5: timing variability in operations meant to be
+    # constant-time, fixed only in 0.7.6. It comes in through elliptic-curve
+    # 0.13 (k256 and p256 0.13, used by midnight-ledger and midnight-curves),
+    # so it cannot be bumped here. Remove once they move to elliptic-curve 0.14.
+    "RUSTSEC-2026-0387",
+]

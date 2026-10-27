@@ -67,7 +67,8 @@ fn inner(name: &str, guard: &str) -> String {
 fn verify(name: &str, guard: &str) -> String {
     format!(
         r#"{{ "op": "verify_proof", "guard": "{guard}", "vk_hash": "0x{vk}",
-              "instance": [], "proof": "{name}" }}"#,
+              "instance": [], "proof": "{name}", "output": "{name}_acc" }},
+           {{ "op": "verify_accumulator", "input": "{name}_acc" }}"#,
         vk = const_hex::encode(sha2::Sha256::digest(STUB_VK)),
     )
 }

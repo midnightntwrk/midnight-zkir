@@ -18,6 +18,7 @@ use midnight_circuits::{
         AssignedBit, AssignedByte, AssignedField, AssignedForeignPoint, AssignedNative,
         AssignedNativePoint, AssignedScalarOfNativeCurve, InnerValue,
     },
+    verifier::AssignedAccumulator,
 };
 use midnight_curves::{Fr as JubjubFr, JubjubExtended, JubjubSubgroup, curve25519, k256, p256};
 use midnight_proofs::{circuit::Value, plonk::Error};
@@ -30,6 +31,9 @@ use proptest::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serialize::{Deserializable, Serializable, Tagged};
 use transient_crypto::curve::{Fr, outer};
+use transient_crypto::proofs::{DeferredAccumulator, InnerSelfEmulation as S, accumulator_pi_len};
+
+use crate::ir_instructions::accumulate::trivial_accumulator;
 
 type F = outer::Scalar;
 
@@ -105,6 +109,11 @@ pub enum IrType {
 
     /// Element of the scalar field of Curve25519.
     Curve25519Scalar,
+
+    // ===== ZKIR 4 TYPES =====
+    /// A collapsed, fixed-base-resolved KZG accumulator deferred by
+    /// `verify_proof`, whose pairing is checked by the outer verifier.
+    Accumulator,
 }
 
 impl IrType {
@@ -131,6 +140,8 @@ impl IrType {
             IrType::Curve25519Point => 4,
             IrType::Curve25519Base => 2,
             IrType::Curve25519Scalar => 2,
+
+            IrType::Accumulator => accumulator_pi_len(),
         }
     }
 
@@ -163,6 +174,7 @@ impl IrType {
             IrType::Curve25519Point => "Point<Curve25519>".to_string(),
             IrType::Curve25519Base => "Base<Curve25519>".to_string(),
             IrType::Curve25519Scalar => "Scalar<Curve25519>".to_string(),
+            IrType::Accumulator => "Accumulator".to_string(),
         }
     }
 
@@ -185,6 +197,7 @@ impl IrType {
             "Point<Curve25519>" => IrType::Curve25519Point,
             "Base<Curve25519>" => IrType::Curve25519Base,
             "Scalar<Curve25519>" => IrType::Curve25519Scalar,
+            "Accumulator" => IrType::Accumulator,
             other => {
                 let inner = other.strip_prefix("Bytes<")?.strip_suffix('>')?;
                 // Reject non-canonical integers: empty, non-digits, or a
@@ -244,6 +257,8 @@ impl IrType {
             IrType::Bool => 13,
             IrType::Byte => 14,
             IrType::Bytes(_) => 15,
+            // ===== ZKIR 4 TYPES =====
+            IrType::Accumulator => 16,
         }
     }
 }
@@ -294,6 +309,7 @@ impl Deserializable for IrType {
                     }
                     IrType::Bytes(n)
                 }
+                16 => IrType::Accumulator,
                 d => return Err(invalid(format!("unrecognised IrType discriminant: {d}"))),
             },
         )
@@ -306,7 +322,7 @@ impl Tagged for IrType {
     }
 
     fn tag_unique_factor() -> String {
-        format!("[{}(),(),({})]", "(),".repeat(13), u32::tag())
+        format!("[{}(),(),({}),()]", "(),".repeat(13), u32::tag())
     }
 }
 
@@ -356,6 +372,7 @@ impl Arbitrary for IrType {
                 Just(IrType::Curve25519Base),
                 Just(IrType::Curve25519Scalar),
             ],
+            1 => Just(IrType::Accumulator),
         ]
         .boxed()
     }
@@ -408,6 +425,9 @@ pub enum IrValue {
 
     /// Curve25519 scalar field value.
     Curve25519Scalar(curve25519::Scalar),
+
+    /// Collapsed, fixed-base-resolved accumulator.
+    Accumulator(DeferredAccumulator),
 }
 
 impl IrValue {
@@ -431,6 +451,8 @@ impl IrValue {
             IrValue::Curve25519Point(_) => IrType::Curve25519Point,
             IrValue::Curve25519Base(_) => IrType::Curve25519Base,
             IrValue::Curve25519Scalar(_) => IrType::Curve25519Scalar,
+
+            IrValue::Accumulator(_) => IrType::Accumulator,
         }
     }
 
@@ -456,6 +478,8 @@ impl IrValue {
             }
             IrType::Curve25519Base => IrValue::Curve25519Base(curve25519::Fp::default()),
             IrType::Curve25519Scalar => IrValue::Curve25519Scalar(curve25519::Scalar::default()),
+
+            IrType::Accumulator => IrValue::Accumulator(trivial_accumulator()),
         }
     }
 }
@@ -484,6 +508,8 @@ pub enum CircuitValue {
     Curve25519Point(AssignedForeignEdwardsPoint<F, curve25519::Curve25519, MEP>),
     Curve25519Base(AssignedField<F, curve25519::Fp, MEP>),
     Curve25519Scalar(AssignedField<F, curve25519::Scalar, MEP>),
+
+    Accumulator(AssignedAccumulator<S>),
 }
 
 impl CircuitValue {
@@ -509,6 +535,13 @@ impl CircuitValue {
             CircuitValue::Curve25519Point(p) => p.value().map(IrValue::Curve25519Point),
             CircuitValue::Curve25519Scalar(s) => s.value().map(IrValue::Curve25519Scalar),
             CircuitValue::Curve25519Base(s) => s.value().map(IrValue::Curve25519Base),
+
+            CircuitValue::Accumulator(acc) => acc.value().map(|acc| {
+                IrValue::Accumulator(
+                    DeferredAccumulator::new(&acc)
+                        .expect("an assigned accumulator is always collapsed"),
+                )
+            }),
         }
     }
 
@@ -532,6 +565,8 @@ impl CircuitValue {
             CircuitValue::Curve25519Point(_) => IrType::Curve25519Point,
             CircuitValue::Curve25519Base(_) => IrType::Curve25519Base,
             CircuitValue::Curve25519Scalar(_) => IrType::Curve25519Scalar,
+
+            CircuitValue::Accumulator(_) => IrType::Accumulator,
         }
     }
 }
@@ -589,6 +624,8 @@ impl_enum_from_try_from!(IrValue, anyhow::Error, anyhow::Error::msg;
     Curve25519Point => curve25519::Curve25519Subgroup,
     Curve25519Base => curve25519::Fp,
     Curve25519Scalar => curve25519::Scalar,
+
+    Accumulator => DeferredAccumulator,
 );
 
 // Derives implementations, for every basic type T:
@@ -613,6 +650,8 @@ impl_enum_from_try_from!(CircuitValue, Error, Error::Synthesis;
     Curve25519Point => AssignedForeignEdwardsPoint<F, curve25519::Curve25519, MEP>,
     Curve25519Base => AssignedField<F, curve25519::Fp, MEP>,
     Curve25519Scalar => AssignedField<F, curve25519::Scalar, MEP>,
+
+    Accumulator => AssignedAccumulator<S>,
 );
 
 #[cfg(test)]
@@ -712,6 +751,7 @@ mod tests {
             IrType::Curve25519Point,
             IrType::Curve25519Base,
             IrType::Curve25519Scalar,
+            IrType::Accumulator,
         ];
 
         // Exhaustiveness guard: adding a variant to `IrType` fails to compile
@@ -732,12 +772,13 @@ mod tests {
                 | IrType::Secp256r1Scalar
                 | IrType::Curve25519Point
                 | IrType::Curve25519Base
-                | IrType::Curve25519Scalar => {}
+                | IrType::Curve25519Scalar
+                | IrType::Accumulator => {}
             }
         }
 
-        // Uniform over 15 variants, so 2048 draws miss one with probability
-        // (14/15)^2048, around 1e-59. `deterministic()` fixes the seed, so this
+        // The rarest variant is drawn with probability 1/16, so 2048 draws miss
+        // one with probability (15/16)^2048, around 1e-57. `deterministic()` fixes the seed, so this
         // does not flake.
         let strategy = IrType::arbitrary();
         let mut runner = TestRunner::deterministic();

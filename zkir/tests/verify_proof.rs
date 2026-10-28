@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for the `inner_proof` / `verify_proof` instruction pair that build no
+//! Tests for the `inner_proof` / `prepare_verification` instruction pair that build no
 //! outer circuit: the text format, IR serialization, and the checks `check`
 //! runs on the IR and its proof witnesses. End-to-end tests are in
 //! `verify_proof_e2e.rs`.
@@ -21,7 +21,7 @@ mod verify_proof_common;
 
 use midnight_zkir::IrSource;
 use midnight_zkir::ir::IrMinorVersion;
-use midnight_zkir::ir_instructions::verify_proof::verify_proof_offcircuit;
+use midnight_zkir::ir_instructions::prepare_verification::prepare_verification_offcircuit;
 use serialize::{Deserializable, Serializable, tagged_deserialize, tagged_serialize};
 use sha2::Digest;
 use transient_crypto::proofs::{InnerProofWitness, ProofPreimage, Zkir};
@@ -39,7 +39,7 @@ use crate::verify_proof_common::{
 /// the VK hash. Neither the full VK nor the proof appears in the text — both
 /// are supplied out-of-band.
 ///
-/// The second `verify_proof` shows the other shape of the same operator: a
+/// The second `prepare_verification` shows the other shape of the same operator: a
 /// constant guard, always `0x01`, i.e. verify unconditionally.
 const VERIFY_PROOF_IR: &str = r#"{
    "version": { "major": 3, "minor": 0 },
@@ -56,7 +56,7 @@ const VERIFY_PROOF_IR: &str = r#"{
            "output": "%p_0"
        },
        {
-           "op": "verify_proof",
+           "op": "prepare_verification",
            "guard": "%g",
            "vk_hash": "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
            "instance": ["%v_0"],
@@ -70,7 +70,7 @@ const VERIFY_PROOF_IR: &str = r#"{
            "output": "%p_1"
        },
        {
-           "op": "verify_proof",
+           "op": "prepare_verification",
            "guard": "0x01",
            "vk_hash": "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
            "instance": ["%v_0"],
@@ -94,7 +94,7 @@ const BIND_ONE: &str = r#"{ "op": "inner_proof", "guard": "0x01", "output": "%p_
 // ---------------------------------------------------------------------------
 
 /// `accumulator_count()` is one per `verify_accumulator` instruction, whatever
-/// the key or guard of the `verify_proof` it verifies.
+/// the key or guard of the `prepare_verification` it verifies.
 #[test]
 fn accumulator_count_tracks_verify_proof_instructions() {
     assert_eq!(
@@ -140,12 +140,12 @@ fn accumulator_count_tracks_verify_proof_instructions() {
     );
 
     // The count must be known at keygen, before any witness exists, so a
-    // guarded-off `verify_proof` still counts.
+    // guarded-off `prepare_verification` still counts.
     for guard in ["0x01", "0x00", "%v_0"] {
         assert_eq!(
             count(&guarded_pair(0, guard, &VK_BLOB_A)),
             1,
-            "guard {guard}: a guarded-off verify_proof still exposes the trivial accumulator"
+            "guard {guard}: a guarded-off prepare_verification still exposes the trivial accumulator"
         );
     }
 
@@ -174,7 +174,7 @@ fn accumulator_count_tracks_verify_proof_instructions() {
 
     let ir_hash_only: IrSource = ir(&bind_and_verify_one(&vk_hash_hex(&VK_BLOB_A)));
     let mut ir_with_keys = ir_hash_only.clone();
-    ir_with_keys.verify_proof_vks = vec![VK_BLOB_A.to_vec()];
+    ir_with_keys.inner_vks = vec![VK_BLOB_A.to_vec()];
     assert_eq!(
         ir_hash_only.accumulator_count(),
         ir_with_keys.accumulator_count(),
@@ -182,7 +182,7 @@ fn accumulator_count_tracks_verify_proof_instructions() {
     );
 }
 
-/// The same VK blob listed twice in `verify_proof_vks` is rejected, even though
+/// The same VK blob listed twice in `inner_vks` is rejected, even though
 /// an instruction uses it. The side-table is indexed by digest, so the second
 /// copy could never be resolved.
 #[test]
@@ -195,17 +195,17 @@ fn duplicate_vk_in_side_table_is_rejected() {
     assert!(err.contains("duplicate verifying key"), "got: {err}");
 }
 
-/// Only a `V1` IR carries `verify_proof_vks` in its binary form, and writing a
+/// Only a `V1` IR carries `inner_vks` in its binary form, and writing a
 /// `V0` that has one fails.
 #[test]
 fn ir_minor_version_gates_the_vk_side_table() {
     let v0 = ir(BIND_ONE);
     assert_eq!(v0.version, IrMinorVersion::V0, "text IR parses as V0");
-    assert!(v0.verify_proof_vks.is_empty());
+    assert!(v0.inner_vks.is_empty());
 
     let back = read(&write(&v0).expect("a V0 with no side-table must write"));
     assert_eq!(back, v0, "a V0 must round-trip");
-    assert!(back.verify_proof_vks.is_empty());
+    assert!(back.inner_vks.is_empty());
 
     let v1 = ir_with_vks(BIND_ONE, vec![VK_BLOB_A.to_vec()]);
     assert_eq!(v1.version, IrMinorVersion::V1);
@@ -214,14 +214,14 @@ fn ir_minor_version_gates_the_vk_side_table() {
     let back = read(&bytes);
     assert_eq!(back, v1, "a V1 must round-trip");
     assert_eq!(
-        back.verify_proof_vks,
+        back.inner_vks,
         vec![VK_BLOB_A.to_vec()],
         "the side-table must survive"
     );
 
     // A V0 with a side-table has no encoding.
     let mut inconsistent = ir(BIND_ONE);
-    inconsistent.verify_proof_vks = vec![VK_BLOB_A.to_vec()];
+    inconsistent.inner_vks = vec![VK_BLOB_A.to_vec()];
     assert_eq!(inconsistent.version, IrMinorVersion::V0);
 
     let err = write(&inconsistent)
@@ -232,7 +232,7 @@ fn ir_minor_version_gates_the_vk_side_table() {
     );
 }
 
-/// `vk_hash` and `verify_proof_vks` survive JSON and binary round-trips, in
+/// `vk_hash` and `inner_vks` survive JSON and binary round-trips, in
 /// order.
 #[test]
 fn ir_round_trip_preserves_vks_in_order() {
@@ -242,7 +242,7 @@ fn ir_round_trip_preserves_vks_in_order() {
     );
 
     let json = serde_json::to_string(&ir).expect("serializes");
-    assert!(json.contains("verify_proof_vks"), "{json}");
+    assert!(json.contains("inner_vks"), "{json}");
     let back: IrSource = serde_json::from_str(&json).expect("parses back");
     assert_eq!(back, ir);
 
@@ -290,9 +290,9 @@ async fn malformed_proof_witness_is_rejected() {
     padded.extend_from_slice(b"trailing junk");
     check(padded.clone()).expect("trailing bytes are ignored by the transcript reader");
 
-    let from_real = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
+    let from_real = prepare_verification_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
         .expect("preparation of the real proof");
-    let from_padded = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &padded, true)
+    let from_padded = prepare_verification_offcircuit(&inner.vk_blob, &inner.pis, &padded, true)
         .expect("preparation of the padded proof");
     assert_eq!(
         from_real, from_padded,
@@ -308,7 +308,7 @@ fn surplus_witness_or_vk_is_rejected() {
 
     let err = expect_check_err(&ir_with_vks("", vec![VK_BLOB_A.to_vec()]), preimage(0));
     assert!(
-        err.contains("verify_proof_vks") && err.contains("used"),
+        err.contains("inner_vks") && err.contains("used"),
         "got: {err}"
     );
 
@@ -326,20 +326,21 @@ fn surplus_witness_or_vk_is_rejected() {
         .expect("one binding, one witness");
 }
 
-/// The `inner_proof` / `verify_proof` text format round-trips through JSON.
+/// The `inner_proof` / `prepare_verification` text format round-trips through JSON.
 ///
 /// `inner_proof` binds the next inner proof witness to a name, which
-/// `verify_proof` takes as its `proof` input. `vk_hash` names a key in the
-/// `verify_proof_vks` side-table; the text stores only the hash. Guards are
+/// `prepare_verification` takes as its `proof` input. `vk_hash` names a key in the
+/// `inner_vks` side-table; the text stores only the hash. Guards are
 /// ordinary operands, a variable or a `0x` immediate. The `vk_hash` here is
 /// fake: nothing is verified.
 #[test]
 fn verify_proof_text_format_roundtrips() {
-    let ir = IrSource::load(VERIFY_PROOF_IR.as_bytes()).expect("verify_proof IR must parse");
+    let ir =
+        IrSource::load(VERIFY_PROOF_IR.as_bytes()).expect("prepare_verification IR must parse");
 
     // A hash-only IR carries no VK bytes.
     assert!(
-        ir.verify_proof_vks.is_empty(),
+        ir.inner_vks.is_empty(),
         "hash-only IR should not carry VK blobs"
     );
 
@@ -352,7 +353,10 @@ fn verify_proof_text_format_roundtrips() {
     // other by name, the VK hash stays a `0x` hex string, and the empty VK
     // side-table is omitted.
     assert!(json.contains("inner_proof"), "op tag missing:\n{json}");
-    assert!(json.contains("verify_proof"), "op tag missing:\n{json}");
+    assert!(
+        json.contains("prepare_verification"),
+        "op tag missing:\n{json}"
+    );
     assert!(json.contains("%p_0"), "proof operand missing:\n{json}");
     assert!(
         json.contains("0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
@@ -371,7 +375,7 @@ fn verify_proof_text_format_roundtrips() {
         "constant guard missing:\n{json}"
     );
     assert!(
-        !json.contains("verify_proof_vks"),
+        !json.contains("inner_vks"),
         "empty VK side-table should be omitted:\n{json}"
     );
 }
@@ -382,7 +386,7 @@ fn verify_proof_text_format_roundtrips() {
 fn side_table_requires_minor_1() {
     let ir = IrSource::load(ir_with_side_table(1).as_bytes()).expect("`minor: 1` must load");
     assert_eq!(ir.version, IrMinorVersion::V1);
-    assert_eq!(ir.verify_proof_vks, vec![vec![0u8, 1, 2]]);
+    assert_eq!(ir.inner_vks, vec![vec![0u8, 1, 2]]);
     tagged_serialize(&ir, &mut Vec::new()).expect("a V1 carrying a side-table must serialize");
 
     assert!(
@@ -490,12 +494,12 @@ fn vk_hash_mismatch_is_rejected() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// One `inner_proof` / `verify_proof` pair under `guard`.
+/// One `inner_proof` / `prepare_verification` pair under `guard`.
 fn guarded_pair(i: usize, guard: &str, blob: &[u8]) -> String {
     format!(
         r#"{{ "op": "inner_proof", "guard": "{guard}", "output": "%p_{i}" }},
            {{
-               "op": "verify_proof",
+               "op": "prepare_verification",
                "guard": "{guard}",
                "vk_hash": "0x{hash}",
                "instance": ["0x7b"],
@@ -538,7 +542,7 @@ fn ir_with_side_table(minor: u8) -> String {
         .replace("\"minor\": 0", &format!("\"minor\": {minor}"))
         .replace(
             "\"do_communications_commitment\": false,",
-            "\"do_communications_commitment\": false,\n   \"verify_proof_vks\": [[0, 1, 2]],",
+            "\"do_communications_commitment\": false,\n   \"inner_vks\": [[0, 1, 2]],",
         )
 }
 
@@ -552,7 +556,7 @@ fn ir_with_vks(instructions: &str, vks: Vec<Vec<u8>>) -> IrSource {
     with_vks(ir(instructions), vks)
 }
 
-/// Binds `%p_0..%p_n`, then one `verify_proof` per hash, into `%a_0..%a_n`.
+/// Binds `%p_0..%p_n`, then one `prepare_verification` per hash, into `%a_0..%a_n`.
 /// Each gets a distinct instance so a round-trip that mixed them up would show.
 fn bind_and_prepare(vk_hashes: &[String]) -> String {
     let binds = (0..vk_hashes.len())
@@ -561,7 +565,7 @@ fn bind_and_prepare(vk_hashes: &[String]) -> String {
     let verifies = vk_hashes.iter().enumerate().map(|(i, h)| {
         let instance = 0x7b + i;
         format!(
-            r#"{{ "op": "verify_proof", "guard": "0x01", "vk_hash": "0x{h}", "instance": ["0x{instance:02x}"], "proof": "%p_{i}", "output": "%a_{i}" }}"#
+            r#"{{ "op": "prepare_verification", "guard": "0x01", "vk_hash": "0x{h}", "instance": ["0x{instance:02x}"], "proof": "%p_{i}", "output": "%a_{i}" }}"#
         )
     });
     binds

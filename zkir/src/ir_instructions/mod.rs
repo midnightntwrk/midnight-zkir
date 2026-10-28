@@ -29,6 +29,6 @@ pub mod into_coordinates;
 pub mod inv;
 pub mod mul;
 pub mod neg;
+pub mod prepare_verification;
 pub mod select;
 pub mod to_bytes;
-pub mod verify_proof;

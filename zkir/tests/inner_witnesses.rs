@@ -13,11 +13,11 @@
 
 //! `inner_proof` consumes one entry of `ProofPreimage::inner_proofs` per
 //! instruction, whatever its guard, so the vector's length is fixed by the
-//! circuit and not by the path taken. Its pairing with `verify_proof` is
+//! circuit and not by the path taken. Its pairing with `prepare_verification` is
 //! checked before either pass runs.
 //!
 //! Every guard here is a constant `0x00`, which is what keeps these tests fast:
-//! a guarded-off `verify_proof` returns the trivial accumulator without reading
+//! a guarded-off `prepare_verification` returns the trivial accumulator without reading
 //! its verifying key, so the side-table entry can be a stub. Guarded-on
 //! verification needs a real key and a real inner proof, and is covered by
 //! `verify_proof_e2e`.
@@ -31,7 +31,7 @@ use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{InnerProofWitness, KeyLocation, ProofPreimage, Zkir};
 
 /// Stands in for a verifying key. Never parsed, because nothing here is
-/// verified; `verify_proof_vks` is only indexed by digest.
+/// verified; `inner_vks` is only indexed by digest.
 const STUB_VK: &[u8] = &[0u8, 1, 2, 3];
 
 fn preimage(inner_proofs: Vec<InnerProofWitness>) -> ProofPreimage {
@@ -66,14 +66,14 @@ fn inner(name: &str, guard: &str) -> String {
 
 fn verify(name: &str, guard: &str) -> String {
     format!(
-        r#"{{ "op": "verify_proof", "guard": "{guard}", "vk_hash": "0x{vk}",
+        r#"{{ "op": "prepare_verification", "guard": "{guard}", "vk_hash": "0x{vk}",
               "instance": [], "proof": "{name}", "output": "{name}_acc" }},
            {{ "op": "verify_accumulator", "input": "{name}_acc" }}"#,
         vk = const_hex::encode(sha2::Sha256::digest(STUB_VK)),
     )
 }
 
-/// A well-formed, guarded-off `inner_proof` / `verify_proof` pair.
+/// A well-formed, guarded-off `inner_proof` / `prepare_verification` pair.
 fn pair(name: &str) -> Vec<String> {
     vec![inner(name, "0x00"), verify(name, "0x00")]
 }
@@ -90,7 +90,7 @@ fn load(instructions: Vec<String>) -> IrSource {
         instructions.join(",\n")
     );
     let mut ir = IrSource::load(ir_json.as_bytes()).expect("IR must parse");
-    ir.verify_proof_vks = vec![STUB_VK.to_vec()];
+    ir.inner_vks = vec![STUB_VK.to_vec()];
     ir
 }
 
@@ -155,5 +155,5 @@ fn a_bound_proof_is_verified_exactly_once() {
     assert!(msg.contains("verified more than once"), "{msg}");
 
     let msg = rejection(vec![inner("%p_0", "0x00")], 1);
-    assert!(msg.contains("no `verify_proof` uses"), "{msg}");
+    assert!(msg.contains("no `prepare_verification` uses"), "{msg}");
 }

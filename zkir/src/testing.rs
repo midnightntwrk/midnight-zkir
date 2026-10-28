@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Fixtures for exercising `verify_proof` from crates that hold no prover of
+//! Fixtures for exercising `prepare_verification` from crates that hold no prover of
 //! their own.
 
 use midnight_circuits::hash::poseidon::PoseidonState;
@@ -65,8 +65,8 @@ impl Relation for Echo {
 
 /// An inner proof, with what a circuit needs in order to verify it.
 pub struct InnerProof {
-    /// The [`IrSource::verify_proof_vks`](crate::IrSource::verify_proof_vks)
-    /// entry the verifying `VerifyProof` names by its hash.
+    /// The [`IrSource::inner_vks`](crate::IrSource::inner_vks)
+    /// entry the verifying `PrepareVerification` names by its hash.
     pub vk_blob: Vec<u8>,
     /// The proof itself, as an
     /// [`InnerProofWitness`](transient_crypto::proofs::InnerProofWitness).
@@ -75,7 +75,7 @@ pub struct InnerProof {
     pub instance: Vec<Fr>,
 }
 
-/// Proves that `value` is `value`, with the transcript `verify_proof` reads.
+/// Proves that `value` is `value`, with the transcript `prepare_verification` reads.
 ///
 /// A proof from the ZKIR pipeline will not do: it is written to a
 /// [`TranscriptHash`](transient_crypto::proofs::TranscriptHash) — Blake2b —

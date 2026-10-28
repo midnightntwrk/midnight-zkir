@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The `verify_proof` instruction: partially verify an inner Midnight proof,
+//! The `prepare_verification` instruction: partially verify an inner Midnight proof,
 //! producing the (deferred) accumulator it leaves for the final pairing. Built
 //! directly on the verifier-gadget primitives that midnight-circuits exposes.
 //! The accumulator is only checked once a `verify_accumulator` exposes it; the
@@ -49,12 +49,12 @@ fn vk_name(vk_blob: &[u8]) -> String {
     format!("inner_vk_{}", const_hex::encode(Sha256::digest(vk_blob)))
 }
 
-/// Off-circuit half of `verify_proof`: partially verifies the inner proof and
+/// Off-circuit half of `prepare_verification`: partially verifies the inner proof and
 /// returns the accumulator the check defers, resolved and collapsed.
 ///
 /// If `guard` is `false` neither key nor proof is read and the trivial
 /// accumulator is returned.
-pub fn verify_proof_offcircuit(
+pub fn prepare_verification_offcircuit(
     vk_blob: &[u8],
     instance: &[outer::Scalar],
     proof: &[u8],
@@ -92,12 +92,12 @@ pub fn verify_proof_offcircuit(
         .ok_or_else(|| anyhow!("the inner proof's accumulator failed to collapse"))
 }
 
-/// In-circuit half of [`verify_proof_offcircuit`]: verifies the inner proof and
+/// In-circuit half of [`prepare_verification_offcircuit`]: verifies the inner proof and
 /// returns its accumulator, resolved and collapsed.
 ///
 /// If `guard` is `0` the accumulator is reduced to the trivial one, so the
 /// deferred pairing holds whatever the prover supplied.
-pub fn verify_proof_incircuit(
+pub fn prepare_verification_incircuit(
     std: &ZkStdLib,
     layouter: &mut impl Layouter<outer::Scalar>,
     vk_blob: &[u8],
@@ -144,10 +144,10 @@ pub fn verify_proof_incircuit(
 }
 
 /// Tracks that each `inner_proof` binding is used by exactly one
-/// `verify_proof`, under the same guard.
+/// `prepare_verification`, under the same guard.
 ///
 /// Guards must match because each instruction reads only its own: guarded
-/// off, `inner_proof` binds an empty blob that a `verify_proof` guarded on
+/// off, `inner_proof` binds an empty blob that a `prepare_verification` guarded on
 /// would then fail to verify.
 #[derive(Default)]
 struct InnerProofUses<'a> {
@@ -166,21 +166,21 @@ impl<'a> InnerProofUses<'a> {
         Ok(())
     }
 
-    /// Records the `verify_proof` of a bound proof.
+    /// Records the `prepare_verification` of a bound proof.
     fn verify(&mut self, proof: &Identifier, guard: &Operand) -> anyhow::Result<()> {
         let Some(pos) = self.pending.iter().position(|(id, _)| *id == proof) else {
             if self.bound.contains(proof) {
                 bail!("{} is verified more than once", proof.0);
             }
             bail!(
-                "`verify_proof` names {}, which no preceding `inner_proof` binds",
+                "`prepare_verification` names {}, which no preceding `inner_proof` binds",
                 proof.0
             );
         };
         let (_, bound_guard) = self.pending.remove(pos);
         if bound_guard != guard {
             bail!(
-                "`verify_proof` on {} is guarded differently to the `inner_proof` that bound it",
+                "`prepare_verification` on {} is guarded differently to the `inner_proof` that bound it",
                 proof.0
             );
         }
@@ -190,48 +190,51 @@ impl<'a> InnerProofUses<'a> {
     /// Rejects a bound proof left unverified.
     fn finish(&self) -> anyhow::Result<()> {
         if let Some((id, _)) = self.pending.first() {
-            bail!("`inner_proof` binds {}, which no `verify_proof` uses", id.0);
+            bail!(
+                "`inner_proof` binds {}, which no `prepare_verification` uses",
+                id.0
+            );
         }
         Ok(())
     }
 }
 
 impl IrSource {
-    /// Rejects a malformed `inner_proof` / `verify_proof` pair: each
-    /// `verify_proof` must name a proof an earlier `inner_proof` bound, under
+    /// Rejects a malformed `inner_proof` / `prepare_verification` pair: each
+    /// `prepare_verification` must name a proof an earlier `inner_proof` bound, under
     /// the same guard, and each bound proof must be used exactly once.
     pub(crate) fn validate_inner_proofs(&self) -> anyhow::Result<()> {
         let mut proofs = InnerProofUses::default();
         for ins in self.instructions.iter() {
             match ins {
                 I::InnerProof { guard, output } => proofs.bind(output, guard)?,
-                I::VerifyProof { guard, proof, .. } => proofs.verify(proof, guard)?,
+                I::PrepareVerification { guard, proof, .. } => proofs.verify(proof, guard)?,
                 _ => {}
             }
         }
         proofs.finish()
     }
 
-    /// Indexes [`IrSource::verify_proof_vks`] by digest, so each `VerifyProof`
+    /// Indexes [`IrSource::inner_vks`] by digest, so each `PrepareVerification`
     /// can resolve its key by `vk_hash`.
     ///
     /// Rejects a duplicated blob, and one left unused by every instruction, so
     /// the side-table stays a canonical set of the keys the circuit needs.
-    pub(crate) fn resolve_verify_proof_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
+    pub(crate) fn resolve_inner_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
         let mut vk_map: HashMap<Vec<u8>, &[u8]> = HashMap::new();
-        for vk_blob in self.verify_proof_vks.iter() {
+        for vk_blob in self.inner_vks.iter() {
             let vk_hash = Sha256::digest(vk_blob).to_vec();
             if vk_map.insert(vk_hash, vk_blob).is_some() {
-                bail!("duplicate verifying key in `verify_proof_vks`");
+                bail!("duplicate verifying key in `inner_vks`");
             }
         }
 
         let mut used = HashSet::new();
         for ins in self.instructions.iter() {
-            if let I::VerifyProof { vk_hash, .. } = ins {
+            if let I::PrepareVerification { vk_hash, .. } = ins {
                 if !vk_map.contains_key(vk_hash) {
                     bail!(
-                        "no verifying key in `verify_proof_vks` for vk_hash 0x{}",
+                        "no verifying key in `inner_vks` for vk_hash 0x{}",
                         const_hex::encode(vk_hash)
                     );
                 }
@@ -241,7 +244,7 @@ impl IrSource {
 
         if used.len() != vk_map.len() {
             bail!(
-                "`verify_proof_vks` holds {} keys but only {} are used",
+                "`inner_vks` holds {} keys but only {} are used",
                 vk_map.len(),
                 used.len()
             );

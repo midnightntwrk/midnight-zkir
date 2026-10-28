@@ -112,7 +112,7 @@ pub enum IrType {
 
     // ===== ZKIR 4 TYPES =====
     /// A collapsed, fixed-base-resolved KZG accumulator deferred by
-    /// `verify_proof`, whose pairing is checked by the outer verifier.
+    /// `prepare_verification`, whose pairing is checked by the outer verifier.
     Accumulator,
 }
 

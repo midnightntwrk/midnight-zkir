@@ -56,7 +56,7 @@ jobs:
         run: .github/scripts/configure-cargo.sh
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       # Run Cargo Clippy on the whole workspace with all features. This is
       # important to avoid bitrot of code that is feature gated behind
@@ -111,7 +111,7 @@ jobs:
         run: .github/scripts/configure-cargo.sh
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       - name: Build zkir
         run: nix build .#zkir
@@ -155,7 +155,7 @@ jobs:
         run: .github/scripts/configure-cargo.sh
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       - name: Fix Nix permissions (needed on macos self hosted runner)
         run: |

@@ -49,10 +49,10 @@ pub struct IrSource {
     /// Each entry is
     /// `MidnightVK::write(SerdeFormat::Processed)`'s output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verify_proof_vks: Vec<Vec<u8>>,
+    pub inner_vks: Vec<Vec<u8>>,
 }
 
-/// Hand-written so `verify_proof_vks` stays empty on a `V0`, which is the
+/// Hand-written so `inner_vks` stays empty on a `V0`, which is the
 /// invariant [`Serializable`] enforces.
 #[cfg(feature = "proptest")]
 impl proptest::arbitrary::Arbitrary for IrSource {
@@ -71,7 +71,7 @@ impl proptest::arbitrary::Arbitrary for IrSource {
         )
             .prop_map(
                 |(version, inputs, outputs, do_communications_commitment, instructions, vks)| {
-                    let verify_proof_vks = match version {
+                    let inner_vks = match version {
                         IrMinorVersion::V0 => Vec::new(),
                         _ => vks,
                     };
@@ -81,7 +81,7 @@ impl proptest::arbitrary::Arbitrary for IrSource {
                         outputs,
                         do_communications_commitment,
                         instructions,
-                        verify_proof_vks,
+                        inner_vks,
                     }
                 },
             )
@@ -108,10 +108,10 @@ impl Tagged for IrSource {
 
 impl Serializable for IrSource {
     fn serialize(&self, writer: &mut impl std::io::Write) -> Result<(), io::Error> {
-        if self.version == IrMinorVersion::V0 && !self.verify_proof_vks.is_empty() {
+        if self.version == IrMinorVersion::V0 && !self.inner_vks.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "`verify_proof_vks` requires `IrMinorVersion::V1` or later",
+                "`inner_vks` requires `IrMinorVersion::V1` or later",
             ));
         }
         Serializable::serialize(&self.version, writer)?;
@@ -120,7 +120,7 @@ impl Serializable for IrSource {
         Serializable::serialize(&self.do_communications_commitment, writer)?;
         Serializable::serialize(&self.instructions, writer)?;
         if self.version != IrMinorVersion::V0 {
-            Serializable::serialize(&self.verify_proof_vks, writer)?;
+            Serializable::serialize(&self.inner_vks, writer)?;
         }
         Ok(())
     }
@@ -134,7 +134,7 @@ impl Serializable for IrSource {
         if self.version == IrMinorVersion::V0 {
             size
         } else {
-            size + self.verify_proof_vks.serialized_size()
+            size + self.inner_vks.serialized_size()
         }
     }
 }
@@ -146,7 +146,7 @@ impl Deserializable for IrSource {
         let outputs = Deserializable::deserialize(reader, recursion_depth)?;
         let do_communications_commitment = Deserializable::deserialize(reader, recursion_depth)?;
         let instructions = Deserializable::deserialize(reader, recursion_depth)?;
-        let verify_proof_vks = if version == IrMinorVersion::V0 {
+        let inner_vks = if version == IrMinorVersion::V0 {
             Vec::new()
         } else {
             Deserializable::deserialize(reader, recursion_depth)?
@@ -157,7 +157,7 @@ impl Deserializable for IrSource {
             outputs,
             do_communications_commitment,
             instructions,
-            verify_proof_vks,
+            inner_vks,
         })
     }
 }
@@ -180,7 +180,7 @@ tag_enforcement_test!(ProverKey<IrSource>);
 #[non_exhaustive]
 pub enum IrMinorVersion {
     V0,
-    /// Adds [`IrSource::verify_proof_vks`].
+    /// Adds [`IrSource::inner_vks`].
     #[default]
     V1,
 }
@@ -1541,10 +1541,10 @@ impl IrSource {
                             serde_json::Value::Number(ver.minor.into()),
                         );
                         let ir: Self = serde_json::from_value(serde_json::Value::Object(obj))?;
-                        if ir.version == IrMinorVersion::V0 && !ir.verify_proof_vks.is_empty() {
+                        if ir.version == IrMinorVersion::V0 && !ir.inner_vks.is_empty() {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                "`verify_proof_vks` requires `minor: 1` or later",
+                                "`inner_vks` requires `minor: 1` or later",
                             ));
                         }
                         Ok(ir)

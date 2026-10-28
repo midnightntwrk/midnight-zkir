@@ -54,7 +54,7 @@ fn vk_name(vk_blob: &[u8]) -> String {
 ///
 /// If `guard` is `false` neither key nor proof is read and the trivial
 /// accumulator is returned.
-pub fn verify_proof_offcircuit(
+pub fn prepare_verification_offcircuit(
     vk_blob: &[u8],
     instance: &[outer::Scalar],
     proof: &[u8],
@@ -92,12 +92,12 @@ pub fn verify_proof_offcircuit(
         .ok_or_else(|| anyhow!("the inner proof's accumulator failed to collapse"))
 }
 
-/// In-circuit half of [`verify_proof_offcircuit`]: verifies the inner proof and
+/// In-circuit half of [`prepare_verification_offcircuit`]: verifies the inner proof and
 /// returns its accumulator, resolved and collapsed.
 ///
 /// If `guard` is `0` the accumulator is reduced to the trivial one, so the
 /// deferred pairing holds whatever the prover supplied.
-pub fn verify_proof_incircuit(
+pub fn prepare_verification_incircuit(
     std: &ZkStdLib,
     layouter: &mut impl Layouter<outer::Scalar>,
     vk_blob: &[u8],
@@ -215,17 +215,17 @@ impl IrSource {
         proofs.finish()
     }
 
-    /// Indexes [`IrSource::verify_proof_vks`] by digest, so each `PrepareVerification`
+    /// Indexes [`IrSource::inner_vks`] by digest, so each `PrepareVerification`
     /// can resolve its key by `vk_hash`.
     ///
     /// Rejects a duplicated blob, and one left unused by every instruction, so
     /// the side-table stays a canonical set of the keys the circuit needs.
-    pub(crate) fn resolve_verify_proof_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
+    pub(crate) fn resolve_inner_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
         let mut vk_map: HashMap<Vec<u8>, &[u8]> = HashMap::new();
-        for vk_blob in self.verify_proof_vks.iter() {
+        for vk_blob in self.inner_vks.iter() {
             let vk_hash = Sha256::digest(vk_blob).to_vec();
             if vk_map.insert(vk_hash, vk_blob).is_some() {
-                bail!("duplicate verifying key in `verify_proof_vks`");
+                bail!("duplicate verifying key in `inner_vks`");
             }
         }
 
@@ -234,7 +234,7 @@ impl IrSource {
             if let I::PrepareVerification { vk_hash, .. } = ins {
                 if !vk_map.contains_key(vk_hash) {
                     bail!(
-                        "no verifying key in `verify_proof_vks` for vk_hash 0x{}",
+                        "no verifying key in `inner_vks` for vk_hash 0x{}",
                         const_hex::encode(vk_hash)
                     );
                 }
@@ -244,7 +244,7 @@ impl IrSource {
 
         if used.len() != vk_map.len() {
             bail!(
-                "`verify_proof_vks` holds {} keys but only {} are used",
+                "`inner_vks` holds {} keys but only {} are used",
                 vk_map.len(),
                 used.len()
             );

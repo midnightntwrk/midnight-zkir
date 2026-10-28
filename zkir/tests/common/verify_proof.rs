@@ -70,7 +70,7 @@ pub fn load_ir(inputs: &str, do_communications_commitment: bool, instructions: &
 /// cannot carry one.
 pub fn with_vks(mut ir: IrSource, vks: Vec<Vec<u8>>) -> IrSource {
     ir.version = IrMinorVersion::V1;
-    ir.verify_proof_vks = vks;
+    ir.inner_vks = vks;
     ir
 }
 

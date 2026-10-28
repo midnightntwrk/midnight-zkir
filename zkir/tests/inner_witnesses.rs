@@ -31,7 +31,7 @@ use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{InnerProofWitness, KeyLocation, ProofPreimage, Zkir};
 
 /// Stands in for a verifying key. Never parsed, because nothing here is
-/// verified; `verify_proof_vks` is only indexed by digest.
+/// verified; `inner_vks` is only indexed by digest.
 const STUB_VK: &[u8] = &[0u8, 1, 2, 3];
 
 fn preimage(inner_proofs: Vec<InnerProofWitness>) -> ProofPreimage {
@@ -90,7 +90,7 @@ fn load(instructions: Vec<String>) -> IrSource {
         instructions.join(",\n")
     );
     let mut ir = IrSource::load(ir_json.as_bytes()).expect("IR must parse");
-    ir.verify_proof_vks = vec![STUB_VK.to_vec()];
+    ir.inner_vks = vec![STUB_VK.to_vec()];
     ir
 }
 

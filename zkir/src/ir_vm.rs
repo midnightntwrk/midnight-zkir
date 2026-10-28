@@ -34,9 +34,11 @@ use crate::ir_instructions::into_coordinates::{
 use crate::ir_instructions::inv::{inv_incircuit, inv_offcircuit};
 use crate::ir_instructions::mul::{mul_incircuit, mul_offcircuit};
 use crate::ir_instructions::neg::{neg_incircuit, neg_offcircuit};
+use crate::ir_instructions::prepare_verification::{
+    prepare_verification_incircuit, prepare_verification_offcircuit,
+};
 use crate::ir_instructions::select::{select_incircuit, select_offcircuit};
 use crate::ir_instructions::to_bytes::{to_bytes_incircuit, to_bytes_offcircuit};
-use crate::ir_instructions::verify_proof::{verify_proof_incircuit, verify_proof_offcircuit};
 use crate::ir_types::{BYTES_PER_FIELD_ELEMENT, CircuitValue, IrType, IrValue, MAX_BYTES_LEN};
 
 use super::ir::{Identifier, Instruction as I, IrSource, Operand};
@@ -243,7 +245,7 @@ impl IrSource {
     ) -> Result<Preprocessed, ProvingError> {
         self.validate_inner_proofs()?;
         self.check_accumulator_lifecycle()?;
-        let verify_proof_vks = self.resolve_verify_proof_vks()?;
+        let inner_vks = self.resolve_inner_vks()?;
 
         let mut memory: HashMap<Identifier, IrValue> = HashMap::new();
         let mut proofs: HashMap<Identifier, Vec<u8>> = HashMap::new();
@@ -899,14 +901,14 @@ impl IrSource {
                         .get(proof)
                         .ok_or_else(|| anyhow!("not an inner proof: {:?}", proof))?;
 
-                    let vk_blob = verify_proof_vks.get(vk_hash).ok_or_else(|| {
+                    let vk_blob = inner_vks.get(vk_hash).ok_or_else(|| {
                         anyhow!(
                             "no verifying key for vk_hash 0x{}",
                             const_hex::encode(vk_hash)
                         )
                     })?;
 
-                    let acc = verify_proof_offcircuit(vk_blob, &instance, proof, guard)?;
+                    let acc = prepare_verification_offcircuit(vk_blob, &instance, proof, guard)?;
                     memory.insert(output.clone(), IrValue::Accumulator(acc));
                 }
                 I::Accumulate { inputs, output } => {
@@ -1025,8 +1027,8 @@ impl Relation for IrSource {
             .map_err(|e| Error::Synthesis(e.to_string()))?;
         self.check_accumulator_lifecycle()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
-        let verify_proof_vks = self
-            .resolve_verify_proof_vks()
+        let inner_vks = self
+            .resolve_inner_vks()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
 
         let mut input_values = Vec::new();
@@ -1737,14 +1739,14 @@ impl Relation for IrSource {
                         Error::Synthesis(format!("not an inner proof: {proof:?}"))
                     })?;
 
-                    let vk_blob = verify_proof_vks.get(vk_hash).ok_or_else(|| {
+                    let vk_blob = inner_vks.get(vk_hash).ok_or_else(|| {
                         Error::Synthesis(format!(
                             "no verifying key for vk_hash 0x{}",
                             const_hex::encode(vk_hash)
                         ))
                     })?;
 
-                    let acc = verify_proof_incircuit(
+                    let acc = prepare_verification_incircuit(
                         std,
                         layouter,
                         vk_blob,

@@ -65,8 +65,8 @@ use midnight_zk_stdlib::{
 };
 use midnight_zkir::IrSource;
 use midnight_zkir::ir_instructions::accumulate::trivial_accumulator;
-use midnight_zkir::ir_instructions::verify_proof::{
-    verify_proof_incircuit, verify_proof_offcircuit,
+use midnight_zkir::ir_instructions::prepare_verification::{
+    prepare_verification_incircuit, prepare_verification_offcircuit,
 };
 use num_bigint::BigUint;
 use num_traits::{Num, One};
@@ -151,9 +151,10 @@ async fn accumulator_is_carried_on_the_proof_not_the_statement() {
         "the statement is the binding input alone; the accumulator is not in it"
     );
 
-    let expected = verify_proof_offcircuit(&fixture.vk_blob, &inner_pis, &inner_proof, true)
-        .expect("off-circuit preparation")
-        .as_public_input();
+    let expected =
+        prepare_verification_offcircuit(&fixture.vk_blob, &inner_pis, &inner_proof, true)
+            .expect("off-circuit preparation")
+            .as_public_input();
     assert_eq!(
         expected.len(),
         acc_len,
@@ -234,8 +235,9 @@ async fn a_bad_carried_accumulator_is_rejected() {
     );
 
     // Preparation defers the pairing, so this succeeds.
-    let deferred_bad = verify_proof_offcircuit(&good.vk_blob, &good.pis, &bogus.proof, true)
-        .expect("preparation succeeds; only the deferred pairing could refuse this");
+    let deferred_bad =
+        prepare_verification_offcircuit(&good.vk_blob, &good.pis, &bogus.proof, true)
+            .expect("preparation succeeds; only the deferred pairing could refuse this");
 
     let relation = RecursiveRelation {
         inner_vk: good.vk_blob.clone(),
@@ -471,9 +473,10 @@ async fn impact_between_two_proofs_leaves_accumulators_intact() {
         );
 
         for (i, inner) in inner.iter().enumerate() {
-            let want = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
-                .expect("off-circuit preparation")
-                .as_public_input();
+            let want =
+                prepare_verification_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
+                    .expect("off-circuit preparation")
+                    .as_public_input();
             assert_eq!(
                 proof.accumulators[i].as_public_input(),
                 want,
@@ -570,7 +573,7 @@ async fn same_vk_verified_twice_is_accepted() {
     let entries: Vec<_> = inner.iter().map(|i| i.entry()).collect();
     let (outer_ir, outer_pk, outer_vk) = outer_setup_all(&entries).await;
     assert_eq!(
-        outer_ir.verify_proof_vks.len(),
+        outer_ir.inner_vks.len(),
         1,
         "the side-table must hold one entry for a key used twice"
     );
@@ -586,7 +589,7 @@ async fn same_vk_verified_twice_is_accepted() {
     // Each accumulator must come from its own proof, not the first one reused.
     assert_eq!(outer_proof.accumulators.len(), 2);
     for (i, inner) in inner.iter().enumerate() {
-        let want = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
+        let want = prepare_verification_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
             .expect("off-circuit preparation")
             .as_public_input();
         assert_eq!(
@@ -720,7 +723,7 @@ async fn verify_proof_carrying_an_accumulator() {
     // The proof to be verified in-circuit, and the accumulator verifying it
     // defers.
     let inner = scalar_inner_proof(&mut rng).await;
-    let deferred = verify_proof_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
+    let deferred = prepare_verification_offcircuit(&inner.vk_blob, &inner.pis, &inner.proof, true)
         .expect("the accumulator the scalar proof defers")
         .as_public_input();
 
@@ -749,7 +752,7 @@ async fn verify_proof_carrying_an_accumulator() {
 
     // What the circuit exposed is the accumulation, not the recursive proof's own
     // accumulator: the carried one is in there too.
-    let own = verify_proof_offcircuit(&blob, &instance, &proof, true)
+    let own = prepare_verification_offcircuit(&blob, &instance, &proof, true)
         .expect("the recursive proof's own accumulator");
     assert_ne!(
         outer_proof.accumulators[0], own,
@@ -985,7 +988,8 @@ impl Relation for RecursiveRelation {
         // The deferred accumulator is the rest of our public inputs. Nothing
         // here is guarded, so the guard is a fixed one.
         let on: AssignedBit<Fq> = std_lib.assign_fixed(layouter, true)?;
-        let acc = verify_proof_incircuit(std_lib, layouter, &self.inner_vk, &[x], witness, &on)?;
+        let acc =
+            prepare_verification_incircuit(std_lib, layouter, &self.inner_vk, &[x], witness, &on)?;
         std_lib.verifier().constrain_as_public_input(layouter, &acc)
     }
 
@@ -1469,7 +1473,7 @@ async fn expect_rejected(
             println!("rejected at prove after {:.1?} -- {e:#}", t.elapsed());
             // Preparation errors carry no context of their own, so compare
             // against preparing the inner proof directly.
-            let prep = verify_proof_offcircuit(vk_blob, instance, &inner_proof, true)
+            let prep = prepare_verification_offcircuit(vk_blob, instance, &inner_proof, true)
                 .expect_err("proving failed, so preparing the inner proof must fail too");
             assert!(
                 format!("{e:#}").contains(&format!("{prep:#}")),

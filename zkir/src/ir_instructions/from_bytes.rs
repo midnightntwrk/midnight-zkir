@@ -15,8 +15,8 @@ use group::{Group, GroupEncoding};
 use midnight_circuits::{
     CircuitField,
     instructions::{
-        AssertionInstructions, AssignmentInstructions, DecompositionInstructions, EccInstructions,
-        ZeroInstructions,
+        AssertionInstructions, AssignmentInstructions, ControlFlowInstructions,
+        DecompositionInstructions, EccInstructions, ZeroInstructions,
     },
     types::{AssignedByte, InnerValue},
 };
@@ -232,7 +232,7 @@ pub fn from_bytes_incircuit(
             let curve = std_lib.jubjub();
             // `assign` constrains the point to the prime-order subgroup.
             let p = curve.assign(layouter, value)?;
-            let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
+            let (x, y) = (curve.x(layouter, &p)?, curve.y(layouter, &p)?);
             let encoding = jubjub_compress_incircuit(std_lib, layouter, &x, &y)?;
             assert_bytes_equal(std_lib, layouter, bytes, &encoding)?;
             Ok(JubjubPoint(p))
@@ -248,7 +248,11 @@ pub fn from_bytes_incircuit(
             let curve = std_lib.secp256k1();
             let p = curve.assign(layouter, value)?;
             let is_id = curve.is_zero(layouter, &p)?;
-            let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
+            // Replace the identity by the generator so `x`/`y` do not reject it;
+            // `sec1_compress_incircuit` zeroes the encoding when `is_id` is set.
+            let g = curve.assign_fixed(layouter, k256::K256::generator())?;
+            let q = curve.select(layouter, &is_id, &g, &p)?;
+            let (x, y) = (curve.x(layouter, &q)?, curve.y(layouter, &q)?);
             let encoding = sec1_compress_incircuit(
                 std_lib,
                 layouter,
@@ -271,7 +275,11 @@ pub fn from_bytes_incircuit(
             let curve = std_lib.p256();
             let p = curve.assign(layouter, value)?;
             let is_id = curve.is_zero(layouter, &p)?;
-            let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
+            // Replace the identity by the generator so `x`/`y` do not reject it;
+            // `sec1_compress_incircuit` zeroes the encoding when `is_id` is set.
+            let g = curve.assign_fixed(layouter, p256::P256::generator())?;
+            let q = curve.select(layouter, &is_id, &g, &p)?;
+            let (x, y) = (curve.x(layouter, &q)?, curve.y(layouter, &q)?);
             let encoding = sec1_compress_incircuit(
                 std_lib,
                 layouter,

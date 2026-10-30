@@ -2621,6 +2621,83 @@ mod proof_tests {
         assert_eq!(c, vec![0u8; 33]);
     }
 
+    // Runs `FromBytes -> ToBytes` in-circuit on 33 zero bytes (the SEC1
+    // encoding of the identity), constraining the decoded point to equal `p`
+    // and the re-encoded bytes to be zero. Returns whether proving succeeds.
+    async fn secp_zero_bytes_proof(curve: &str, p: IrValue) -> bool {
+        let ir_raw = format!(
+            r#"{{
+           "version": {{ "major": 3, "minor": 0 }},
+           "inputs": [
+              {{ "name": "%p", "type": "Point<{curve}>" }}
+           ],
+           "outputs": [],
+           "do_communications_commitment": false,
+           "instructions": [
+               {{ "op": "private_input", "type": "Bytes<33>", "guard": null, "output": "%z" }},
+               {{ "op": "from_bytes", "bytes": "%z", "type": "Point<{curve}>", "output": "%q" }},
+               {{ "op": "constrain_eq", "a": "%q", "b": "%p" }},
+               {{ "op": "to_bytes", "input": "%q", "output": "%c" }},
+               {{ "op": "constrain_eq", "a": "%c", "b": "%z" }}
+           ]
+        }}"#
+        );
+        let ir = IrSource::load(ir_raw.as_bytes()).unwrap();
+
+        let encode = |v: IrValue| -> Vec<transient_crypto::curve::Fr> {
+            encode_offcircuit(&v)
+                .into_iter()
+                .map(|x| x.try_into().unwrap())
+                .collect()
+        };
+
+        let (pk, vk) = ir.keygen(&TestParams).await.unwrap();
+        let preimage = ProofPreimage {
+            binding_input: 42.into(),
+            communications_commitment: None,
+            inputs: encode(p),
+            private_transcript: encode(IrValue::Bytes(vec![0u8; 33])),
+            public_transcript_inputs: vec![],
+            public_transcript_outputs: vec![],
+            key_location: KeyLocation(Cow::Borrowed("builtin")),
+        };
+        let Ok((proof, _)) = preimage
+            .prove::<IrSource>(
+                &mut ChaCha20Rng::from_seed([42; 32]),
+                &TestParams,
+                &TestResolver {
+                    pk: pk.clone(),
+                    vk: vk.clone(),
+                    ir: ir.clone(),
+                },
+            )
+            .await
+        else {
+            return false;
+        };
+        vk.verify(&PARAMS_VERIFIER, &proof, [42.into()].into_iter())
+            .unwrap();
+        true
+    }
+
+    #[actix_rt::test]
+    async fn test_secp256k1_zero_bytes_proof() {
+        let id = IrValue::Secp256k1Point(k256::K256::identity());
+        assert!(secp_zero_bytes_proof("Secp256k1", id).await);
+
+        let g = IrValue::Secp256k1Point(k256::K256::generator());
+        assert!(!secp_zero_bytes_proof("Secp256k1", g).await);
+    }
+
+    #[actix_rt::test]
+    async fn test_secp256r1_zero_bytes_proof() {
+        let id = IrValue::Secp256r1Point(p256::P256::identity());
+        assert!(secp_zero_bytes_proof("Secp256r1", id).await);
+
+        let g = IrValue::Secp256r1Point(p256::P256::generator());
+        assert!(!secp_zero_bytes_proof("Secp256r1", g).await);
+    }
+
     #[actix_rt::test]
     async fn test_curve25519_bytes_conversion_proof() {
         // Curve25519 counterpart of test_bytes_conversion_proof, exercising

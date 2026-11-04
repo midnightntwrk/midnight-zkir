@@ -4,7 +4,7 @@ ZKIR releases use two manually triggered GitHub Actions workflows:
 
 | Step        | Workflow                                                                 | What it does                                                                                                                                       |
 | ----------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pre-release | **Prepare ZKIR Release** (`.github/workflows/prepare-release.yml`)       | Bumps versions, refreshes `Cargo.lock`, promotes `CHANGELOG.md`, scaffolds release notes, regenerates the wasm API docs, and opens a release PR.   |
+| Pre-release | **Prepare ZKIR Release** (`.github/workflows/prepare-release.yml`)       | Bumps versions, refreshes `Cargo.lock`, promotes `CHANGELOG.md`, scaffolds release notes, and opens a release PR.                                  |
 | Release     | **Publish ZKIR Release** (`.github/workflows/release.yml`)               | Builds and tests the release, pushes the `zkir-<version>` tag, publishes to npm and crates.io, and creates the GitHub Release.                      |
 
 Both workflows act on the head of the branch they are dispatched from:
@@ -54,7 +54,6 @@ Review and finish the release PR. Its checklist covers:
 - [ ] Versions are correct in the `Cargo.toml`, `zkir-wasm/package.json`, and
       `Cargo.lock` diffs.
 - [ ] The `CHANGELOG.md` entry has been reviewed and edited.
-- [ ] The regenerated `docs/api/**` diff looks right.
 - [ ] Final releases only: the prose in
       `.github/release-notes/zkir-<version>.md` has been written, and the draft
       bullets and placeholder comments have been removed.
@@ -158,8 +157,6 @@ branch:
      `## Unreleased`. Keep any base-branch-only entries (the changes that were not
      released) under `## Unreleased`, and remove entries that are now in the
      released section.
-   - Re-run `npm run build:markdown-docs` in `zkir-wasm` if the API docs
-     conflict.
 
 Keep the release branch for later patch releases (for example `3.1.1`) of the
 same line. Repeat steps 3–7 for each one.

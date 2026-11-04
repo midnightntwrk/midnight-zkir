@@ -27,8 +27,6 @@ cargo build --release --features binary
 cargo test
 ```
 
-Note that some dependencies (`midnight-base-crypto`, `midnight-serialize`, `midnight-transient-crypto`) are resolved from the [midnight-ledger](https://github.com/midnightntwrk/midnight-ledger) repository via `[patch.crates-io]` until they are published to crates.io.
-
 ## Usage
 
 Compile a directory of ZKIR circuits into proving/verifying keys:

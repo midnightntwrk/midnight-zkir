@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use group::GroupEncoding;
+use group::{Group, GroupEncoding};
 use midnight_circuits::{
     CircuitField,
     instructions::{
@@ -20,7 +20,7 @@ use midnight_circuits::{
     },
     types::{AssignedBit, AssignedByte, AssignedNative, InnerConstants, Instantiable},
 };
-use midnight_curves::curve25519;
+use midnight_curves::{curve25519, k256, p256};
 use midnight_proofs::{circuit::Layouter, plonk};
 use midnight_zk_stdlib::ZkStdLib;
 
@@ -177,14 +177,18 @@ pub fn to_bytes_incircuit(
 
         JubjubPoint(p) => {
             let curve = std_lib.jubjub();
-            let (x, y) = (curve.x_coordinate(p), curve.y_coordinate(p));
+            let (x, y) = (curve.x(layouter, p)?, curve.y(layouter, p)?);
             jubjub_compress_incircuit(std_lib, layouter, &x, &y).map(Bytes)
         }
 
         Secp256k1Point(p) => {
             let curve = std_lib.secp256k1();
             let is_id = curve.is_zero(layouter, p)?;
-            let (x, y) = (curve.x_coordinate(p), curve.y_coordinate(p));
+            // Replace the identity by the generator so `x`/`y` do not reject it;
+            // `sec1_compress_incircuit` zeroes the encoding when `is_id` is set.
+            let g = curve.assign_fixed(layouter, k256::K256::generator())?;
+            let q = curve.select(layouter, &is_id, &g, p)?;
+            let (x, y) = (curve.x(layouter, &q)?, curve.y(layouter, &q)?);
             sec1_compress_incircuit(std_lib, layouter, curve.base_field_chip(), &is_id, &x, &y)
                 .map(Bytes)
         }
@@ -192,7 +196,11 @@ pub fn to_bytes_incircuit(
         Secp256r1Point(p) => {
             let curve = std_lib.p256();
             let is_id = curve.is_zero(layouter, p)?;
-            let (x, y) = (curve.x_coordinate(p), curve.y_coordinate(p));
+            // Replace the identity by the generator so `x`/`y` do not reject it;
+            // `sec1_compress_incircuit` zeroes the encoding when `is_id` is set.
+            let g = curve.assign_fixed(layouter, p256::P256::generator())?;
+            let q = curve.select(layouter, &is_id, &g, p)?;
+            let (x, y) = (curve.x(layouter, &q)?, curve.y(layouter, &q)?);
             sec1_compress_incircuit(std_lib, layouter, curve.base_field_chip(), &is_id, &x, &y)
                 .map(Bytes)
         }

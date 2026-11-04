@@ -49,7 +49,7 @@ use group::Group;
 use midnight_circuits::instructions::{
     ArithInstructions, AssertionInstructions, AssignmentInstructions, BinaryInstructions,
     ControlFlowInstructions, ConversionInstructions, DecompositionInstructions,
-    PublicInputInstructions, RangeCheckInstructions, ZeroInstructions,
+    PublicInputInstructions, ZeroInstructions,
 };
 use midnight_circuits::types::{AssignedBit, AssignedByte, AssignedNative, InnerValue};
 use midnight_circuits::verifier::AssignedAccumulator;
@@ -59,7 +59,6 @@ use midnight_proofs::{
     plonk::Error,
 };
 use midnight_zk_stdlib::{Relation, ZkStdLib, ZkStdLibArch};
-use num_bigint::BigUint;
 use serialize::{Deserializable, Serializable, VecExt, tagged_deserialize, tagged_serialize};
 use sha2::{Sha256, Sha512};
 use sha3::{Digest, Keccak256};
@@ -283,7 +282,7 @@ impl IrSource {
             pis.push(
                 preimage
                     .communications_commitment
-                    .ok_or(anyhow!("Expected communications commitment"))?
+                    .ok_or_else(|| anyhow!("Expected communications commitment"))?
                     .0,
             );
         }
@@ -299,7 +298,7 @@ impl IrSource {
             let res = memory
                 .get(id)
                 .cloned()
-                .ok_or(anyhow!("variable not found: {:?}", id));
+                .ok_or_else(|| anyhow!("variable not found: {:?}", id));
             trace!(?res, "retrieved from {:?}", id);
             res
         };
@@ -972,7 +971,7 @@ impl IrSource {
         if self.do_communications_commitment {
             let comm_comm = preimage
                 .communications_commitment
-                .ok_or(anyhow!("Expected communications randomness"))?;
+                .ok_or_else(|| anyhow!("Expected communications randomness"))?;
             let mut comm_comm_inputs: Vec<Fr> = Vec::new();
             comm_comm_inputs.extend(preimage.inputs.iter());
             for value in outputs.iter() {
@@ -1038,7 +1037,7 @@ impl Relation for IrSource {
                     .memory
                     .get(&id.name)
                     .cloned()
-                    .unwrap_or(IrValue::Native(0.into()))
+                    .unwrap_or_else(|| IrValue::Native(0.into()))
             });
             input_values.push(value);
         }
@@ -1064,7 +1063,7 @@ impl Relation for IrSource {
         ) -> Result<&'a CircuitValue, Error> {
             memory
                 .get(id)
-                .ok_or(Error::Synthesis(format!("value {id:?} not in memory")))
+                .ok_or_else(|| Error::Synthesis(format!("value {id:?} not in memory")))
         }
 
         fn resolve_operand<'a>(
@@ -1375,14 +1374,12 @@ impl Relation for IrSource {
                     output,
                 } => {
                     let value = witness.as_ref().map_with_result(|preproc| {
-                        preproc
-                            .memory
-                            .get(output)
-                            .cloned()
-                            .ok_or(Error::Synthesis(format!(
+                        preproc.memory.get(output).cloned().ok_or_else(|| {
+                            Error::Synthesis(format!(
                                 "Output {:?} not found in witness memory",
                                 output
-                            )))
+                            ))
+                        })
                     })?;
 
                     mem_insert(
@@ -1422,27 +1419,25 @@ impl Relation for IrSource {
                     let divisor: AssignedNative<_> = divisor_val.try_into()?;
                     let modulus: AssignedNative<_> = modulus_val.try_into()?;
 
-                    std.assert_lower_than_fixed(
-                        layouter,
-                        &divisor,
-                        &(BigUint::from(1u32) << (FR_BITS as u32 - *bits)),
-                    )?;
-                    std.assert_lower_than_fixed(
-                        layouter,
-                        &modulus,
-                        &(BigUint::from(1u32) << *bits),
-                    )?;
-
                     use group::ff::Field;
-                    let result = CircuitValue::Native(std.linear_combination(
-                        layouter,
-                        &[
-                            (outer::Scalar::from(1), modulus),
-                            (outer::Scalar::from(2).pow([*bits as u64]), divisor),
-                        ],
-                        outer::Scalar::from(0),
-                    )?);
-                    mem_insert(output.clone(), result, &mut memory)?;
+                    let result_val = divisor.value().zip(modulus.value()).map(|(d, m)| {
+                        let two_pow_bits = outer::Scalar::from(2).pow([*bits as u64]);
+                        *d * two_pow_bits + *m
+                    });
+                    let result = std.assign(layouter, result_val)?;
+
+                    // The canonical bits of `result` are below the field modulus. Splitting
+                    // them into the low `bits` (the modulus) and the high part (the divisor)
+                    // forces `divisor * 2^bits + modulus` to be an integer below the
+                    // modulus, so the field sum cannot have wrapped around.
+                    let result_bits = std.assigned_to_le_bits(layouter, &result, None, true)?;
+                    let (modulus_bits, divisor_bits) = result_bits.split_at(*bits as usize);
+                    let modulus_check = std.assigned_from_le_bits(layouter, modulus_bits)?;
+                    let divisor_check = std.assigned_from_le_bits(layouter, divisor_bits)?;
+                    std.assert_equal(layouter, &modulus_check, &modulus)?;
+                    std.assert_equal(layouter, &divisor_check, &divisor)?;
+
+                    mem_insert(output.clone(), CircuitValue::Native(result), &mut memory)?;
                 }
                 I::EcMul { a, scalar, output } => {
                     let p = resolve_operand(std, layouter, &memory, a)?;

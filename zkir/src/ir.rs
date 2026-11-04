@@ -52,7 +52,7 @@ pub struct IrSource {
     pub inner_vks: Vec<Vec<u8>>,
 }
 
-/// Hand-written so `inner_vks` stays empty on a `V0`, which is the
+/// Hand-written so `inner_vks` stays empty before `V3`, which is the
 /// invariant [`Serializable`] enforces.
 #[cfg(feature = "proptest")]
 impl proptest::arbitrary::Arbitrary for IrSource {
@@ -71,9 +71,10 @@ impl proptest::arbitrary::Arbitrary for IrSource {
         )
             .prop_map(
                 |(version, inputs, outputs, do_communications_commitment, instructions, vks)| {
-                    let inner_vks = match version {
-                        IrMinorVersion::V0 => Vec::new(),
-                        _ => vks,
+                    let inner_vks = if version.has_inner_vks() {
+                        vks
+                    } else {
+                        Vec::new()
                     };
                     IrSource {
                         version,
@@ -95,7 +96,7 @@ impl Tagged for IrSource {
     }
     fn tag_unique_factor() -> String {
         format!(
-            "(({},{},{},{},{},v1-only({})))",
+            "(({},{},{},{},{},v3-only({})))",
             <IrMinorVersion>::tag(),
             <Vec<TypedIdentifier>>::tag(),
             <Vec<IrType>>::tag(),
@@ -108,10 +109,10 @@ impl Tagged for IrSource {
 
 impl Serializable for IrSource {
     fn serialize(&self, writer: &mut impl std::io::Write) -> Result<(), io::Error> {
-        if self.version == IrMinorVersion::V0 && !self.inner_vks.is_empty() {
+        if !self.version.has_inner_vks() && !self.inner_vks.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "`inner_vks` requires `IrMinorVersion::V1` or later",
+                "`inner_vks` requires `IrMinorVersion::V3` or later",
             ));
         }
         Serializable::serialize(&self.version, writer)?;
@@ -119,7 +120,7 @@ impl Serializable for IrSource {
         Serializable::serialize(&self.outputs, writer)?;
         Serializable::serialize(&self.do_communications_commitment, writer)?;
         Serializable::serialize(&self.instructions, writer)?;
-        if self.version != IrMinorVersion::V0 {
+        if self.version.has_inner_vks() {
             Serializable::serialize(&self.inner_vks, writer)?;
         }
         Ok(())
@@ -131,10 +132,10 @@ impl Serializable for IrSource {
             + self.outputs.serialized_size()
             + self.do_communications_commitment.serialized_size()
             + self.instructions.serialized_size();
-        if self.version == IrMinorVersion::V0 {
-            size
-        } else {
+        if self.version.has_inner_vks() {
             size + self.inner_vks.serialized_size()
+        } else {
+            size
         }
     }
 }
@@ -146,10 +147,10 @@ impl Deserializable for IrSource {
         let outputs = Deserializable::deserialize(reader, recursion_depth)?;
         let do_communications_commitment = Deserializable::deserialize(reader, recursion_depth)?;
         let instructions = Deserializable::deserialize(reader, recursion_depth)?;
-        let inner_vks = if version == IrMinorVersion::V0 {
-            Vec::new()
-        } else {
+        let inner_vks = if version.has_inner_vks() {
             Deserializable::deserialize(reader, recursion_depth)?
+        } else {
+            Vec::new()
         };
         Ok(IrSource {
             version,
@@ -180,9 +181,17 @@ tag_enforcement_test!(ProverKey<IrSource>);
 #[non_exhaustive]
 pub enum IrMinorVersion {
     V0,
+    V1,
+    V2,
     /// Adds [`IrSource::inner_vks`].
     #[default]
-    V1,
+    V3,
+}
+
+impl IrMinorVersion {
+    fn has_inner_vks(&self) -> bool {
+        !matches!(self, Self::V0 | Self::V1 | Self::V2)
+    }
 }
 
 impl Zkir for IrSource {
@@ -1525,26 +1534,25 @@ impl IrSource {
             serde_json::Value::Object(mut obj) => {
                 let ver = serde_json::from_value(
                     obj.get("version")
-                        .ok_or(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Expected a version entry",
-                        ))?
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "Expected a version entry")
+                        })?
                         .clone(),
                 )?;
                 match ver {
                     SerdeVersion {
                         major: 3,
-                        minor: 0..=1,
+                        minor: 0..=3,
                     } => {
                         obj.insert(
                             "version".into(),
                             serde_json::Value::Number(ver.minor.into()),
                         );
                         let ir: Self = serde_json::from_value(serde_json::Value::Object(obj))?;
-                        if ir.version == IrMinorVersion::V0 && !ir.inner_vks.is_empty() {
+                        if !ir.version.has_inner_vks() && !ir.inner_vks.is_empty() {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                "`inner_vks` requires `minor: 1` or later",
+                                "`inner_vks` requires `minor: 3` or later",
                             ));
                         }
                         Ok(ir)

@@ -195,7 +195,7 @@ fn duplicate_vk_in_side_table_is_rejected() {
     assert!(err.contains("duplicate verifying key"), "got: {err}");
 }
 
-/// Only a `V1` IR carries `inner_vks` in its binary form, and writing a
+/// Only a `V3` IR carries `inner_vks` in its binary form, and writing a
 /// `V0` that has one fails.
 #[test]
 fn ir_minor_version_gates_the_vk_side_table() {
@@ -207,12 +207,12 @@ fn ir_minor_version_gates_the_vk_side_table() {
     assert_eq!(back, v0, "a V0 must round-trip");
     assert!(back.inner_vks.is_empty());
 
-    let v1 = ir_with_vks(BIND_ONE, vec![VK_BLOB_A.to_vec()]);
-    assert_eq!(v1.version, IrMinorVersion::V1);
+    let v3 = ir_with_vks(BIND_ONE, vec![VK_BLOB_A.to_vec()]);
+    assert_eq!(v3.version, IrMinorVersion::V3);
 
-    let bytes = write(&v1).expect("a V1 with a side-table must write");
+    let bytes = write(&v3).expect("a V3 with a side-table must write");
     let back = read(&bytes);
-    assert_eq!(back, v1, "a V1 must round-trip");
+    assert_eq!(back, v3, "a V3 must round-trip");
     assert_eq!(
         back.inner_vks,
         vec![VK_BLOB_A.to_vec()],
@@ -227,7 +227,7 @@ fn ir_minor_version_gates_the_vk_side_table() {
     let err = write(&inconsistent)
         .expect_err("a V0 carrying a side-table has no encoding and must not be written");
     assert!(
-        format!("{err}").contains("V1"),
+        format!("{err}").contains("V3"),
         "the error should name the version required: {err}"
     );
 }
@@ -380,18 +380,18 @@ fn verify_proof_text_format_roundtrips() {
     );
 }
 
-/// A side-table exists only from `V1` on, so text carrying one must declare
-/// `minor: 1`. The inconsistent document is refused at load.
+/// A side-table exists only from `V3` on, so text carrying one must declare
+/// `minor: 3`. The inconsistent document is refused at load.
 #[test]
-fn side_table_requires_minor_1() {
-    let ir = IrSource::load(ir_with_side_table(1).as_bytes()).expect("`minor: 1` must load");
-    assert_eq!(ir.version, IrMinorVersion::V1);
+fn side_table_requires_minor_3() {
+    let ir = IrSource::load(ir_with_side_table(3).as_bytes()).expect("`minor: 3` must load");
+    assert_eq!(ir.version, IrMinorVersion::V3);
     assert_eq!(ir.inner_vks, vec![vec![0u8, 1, 2]]);
-    tagged_serialize(&ir, &mut Vec::new()).expect("a V1 carrying a side-table must serialize");
+    tagged_serialize(&ir, &mut Vec::new()).expect("a V3 carrying a side-table must serialize");
 
     assert!(
-        IrSource::load(ir_with_side_table(0).as_bytes()).is_err(),
-        "`minor: 0` must not accept a side-table"
+        IrSource::load(ir_with_side_table(2).as_bytes()).is_err(),
+        "`minor: 2` must not accept a side-table"
     );
 }
 

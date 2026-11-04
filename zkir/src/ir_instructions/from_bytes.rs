@@ -15,8 +15,8 @@ use group::{Group, GroupEncoding};
 use midnight_circuits::{
     CircuitField,
     instructions::{
-        AssertionInstructions, AssignmentInstructions, DecompositionInstructions, EccInstructions,
-        ZeroInstructions,
+        AssertionInstructions, AssignmentInstructions, ControlFlowInstructions,
+        DecompositionInstructions, EccInstructions, ZeroInstructions,
     },
     types::{AssignedByte, InnerValue},
 };
@@ -227,12 +227,12 @@ pub fn from_bytes_incircuit(
                 <&[u8; 32]>::try_from(v.as_slice())
                     .ok()
                     .and_then(|b| Option::from(JubjubSubgroup::from_bytes(b)))
-                    .unwrap_or(JubjubSubgroup::generator())
+                    .unwrap_or_else(JubjubSubgroup::generator)
             });
             let curve = std_lib.jubjub();
             // `assign` constrains the point to the prime-order subgroup.
             let p = curve.assign(layouter, value)?;
-            let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
+            let (x, y) = (curve.x(layouter, &p)?, curve.y(layouter, &p)?);
             let encoding = jubjub_compress_incircuit(std_lib, layouter, &x, &y)?;
             assert_bytes_equal(std_lib, layouter, bytes, &encoding)?;
             Ok(JubjubPoint(p))
@@ -243,12 +243,16 @@ pub fn from_bytes_incircuit(
                 <[u8; 33]>::try_from(v.as_slice())
                     .ok()
                     .and_then(|b| Option::from(k256::K256::from_bytes(&b.into())))
-                    .unwrap_or(k256::K256::generator())
+                    .unwrap_or_else(k256::K256::generator)
             });
             let curve = std_lib.secp256k1();
             let p = curve.assign(layouter, value)?;
             let is_id = curve.is_zero(layouter, &p)?;
-            let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
+            // Replace the identity by the generator so `x`/`y` do not reject it;
+            // `sec1_compress_incircuit` zeroes the encoding when `is_id` is set.
+            let g = curve.assign_fixed(layouter, k256::K256::generator())?;
+            let q = curve.select(layouter, &is_id, &g, &p)?;
+            let (x, y) = (curve.x(layouter, &q)?, curve.y(layouter, &q)?);
             let encoding = sec1_compress_incircuit(
                 std_lib,
                 layouter,
@@ -266,12 +270,16 @@ pub fn from_bytes_incircuit(
                 <[u8; 33]>::try_from(v.as_slice())
                     .ok()
                     .and_then(|b| Option::from(p256::P256::from_bytes(&b.into())))
-                    .unwrap_or(p256::P256::generator())
+                    .unwrap_or_else(p256::P256::generator)
             });
             let curve = std_lib.p256();
             let p = curve.assign(layouter, value)?;
             let is_id = curve.is_zero(layouter, &p)?;
-            let (x, y) = (curve.x_coordinate(&p), curve.y_coordinate(&p));
+            // Replace the identity by the generator so `x`/`y` do not reject it;
+            // `sec1_compress_incircuit` zeroes the encoding when `is_id` is set.
+            let g = curve.assign_fixed(layouter, p256::P256::generator())?;
+            let q = curve.select(layouter, &is_id, &g, &p)?;
+            let (x, y) = (curve.x(layouter, &q)?, curve.y(layouter, &q)?);
             let encoding = sec1_compress_incircuit(
                 std_lib,
                 layouter,
@@ -296,7 +304,7 @@ pub fn from_bytes_incircuit(
                     .ok()
                     .and_then(|b| Option::from(curve25519::Curve25519::from_bytes(b)))
                     .and_then(|p: curve25519::Curve25519| Curve25519Subgroup::from_edwards(p.0))
-                    .unwrap_or(Curve25519Subgroup::generator())
+                    .unwrap_or_else(Curve25519Subgroup::generator)
             });
             std_lib
                 .curve25519()

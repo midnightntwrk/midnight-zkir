@@ -66,10 +66,10 @@ pub fn load_ir(inputs: &str, do_communications_commitment: bool, instructions: &
     IrSource::load(json.as_bytes()).expect("IR must parse")
 }
 
-/// Attaches a VK side-table, bumping to [`IrMinorVersion::V1`] since a `V0`
-/// cannot carry one.
+/// Attaches a VK side-table, bumping to [`IrMinorVersion::V3`] since earlier
+/// versions cannot carry one.
 pub fn with_vks(mut ir: IrSource, vks: Vec<Vec<u8>>) -> IrSource {
-    ir.version = IrMinorVersion::V1;
+    ir.version = IrMinorVersion::V3;
     ir.inner_vks = vks;
     ir
 }

@@ -13,6 +13,10 @@ default-members = [
 license = "Apache-2.0"
 repository = "https://github.com/midnightntwrk/midnight-zkir"
 
+[workspace.lints.clippy]
+redundant_clone = "warn"
+or_fun_call = "warn"
+
 # Used by the nix wasm packaging (bagel.nix); same settings as midnight-ledger.
 [profile.wasm]
 inherits = "release"
@@ -35,6 +39,3 @@ midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-l
 # as the git copies above, and nix's importCargoLock cannot vendor the same
 # name+version from two sources.
 midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "6f72b82f0a86e32622538bf2e036c43d5b6e64b8" }
-# `AssignedAccumulator::is_collapsed` is not released yet; resolve it from the
-# head of midnight-zk PR #553 until it ships.
-midnight-circuits = { git = "https://github.com/midnightntwrk/midnight-zk", rev = "604f739269aaff06ed14a7447779d70840d7bd70" }

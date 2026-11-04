@@ -70,7 +70,7 @@ jobs:
         run: echo "shards=$(.github/scripts/nextest-shard.sh --matrix)" >> "$GITHUB_OUTPUT"
 
       - name: Upload test archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: nextest-archive-${{ inputs.os }}
           path: nextest-archive.tar.zst
@@ -123,7 +123,7 @@ jobs:
 
       - name: Upload Artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: "zkir-test-results-${{ inputs.os }}-${{ matrix.shard }}"
           path: target/nextest/ci/test-results.xml

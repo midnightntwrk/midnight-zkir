@@ -1665,7 +1665,7 @@ dependencies = [
  "midnight-serialize",
  "pastey",
  "proptest",
- "proptest-derive",
+ "proptest-derive 0.8.0",
  "rand 0.8.7",
  "reqwest",
  "serde",
@@ -1774,7 +1774,7 @@ dependencies = [
  "lazy_static",
  "midnight-serialize-macros",
  "proptest",
- "proptest-derive",
+ "proptest-derive 0.8.0",
  "rand 0.8.7",
  "serde",
  "serde_bytes",
@@ -1809,7 +1809,7 @@ dependencies = [
  "midnight-storage-macros",
  "parking_lot",
  "proptest",
- "proptest-derive",
+ "proptest-derive 0.8.0",
  "rand 0.8.7",
  "serde",
  "sha2 0.11.0",
@@ -1854,7 +1854,7 @@ dependencies = [
  "midnight-zk-stdlib",
  "pastey",
  "proptest",
- "proptest-derive",
+ "proptest-derive 0.8.0",
  "rand 0.8.7",
  "serde",
  "serde_bytes",
@@ -1916,7 +1916,7 @@ dependencies = [
  "num-traits",
  "pastey",
  "proptest",
- "proptest-derive",
+ "proptest-derive 0.9.0",
  "rand 0.8.7",
  "rand_chacha 0.3.1",
  "serde",
@@ -2275,6 +2275,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "proptest-derive"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "587d11bad8340bf431e47b2ca2a3f11ecac3b09ecbf2f6e17dcf6655eead1ca9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -3105,7 +3116,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

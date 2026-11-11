@@ -1674,7 +1674,7 @@ dependencies = [
  "elliptic-curve 0.14.3",
  "primeorder 0.14.0",
  "serdect",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "signature 3.0.0",
  "wnaf",
 ]
@@ -1794,7 +1794,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "signature 3.0.0",
  "subtle",
  "tracing",
@@ -1939,7 +1939,7 @@ dependencies = [
  "proptest-derive",
  "rand 0.8.7",
  "serde",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "sysinfo",
  "tempfile",
 ]
@@ -1987,7 +1987,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "subtle",
  "tracing",
  "zeroize",
@@ -2051,7 +2051,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "serde_repr",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "sha3",
  "strum",
  "tokio",
@@ -3054,9 +3054,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",

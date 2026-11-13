@@ -20,11 +20,13 @@
 use std::collections::HashSet;
 
 use anyhow::{anyhow, bail};
+use midnight_circuits::hash::poseidon::PoseidonChip;
 use midnight_circuits::verifier::{Accumulator, AssignedAccumulator};
+use midnight_curves::Bls12;
 use midnight_proofs::{circuit::Layouter, plonk::Error};
 use midnight_zk_stdlib::ZkStdLib;
 use transient_crypto::curve::outer;
-use transient_crypto::proofs::{DeferredAccumulator, InnerSelfEmulation as S};
+use transient_crypto::proofs::DeferredAccumulator;
 
 use crate::ir::{Identifier, Instruction as I, IrSource, Operand};
 use crate::ir_types::IrType;
@@ -32,13 +34,13 @@ use crate::ir_types::IrType;
 /// The accumulator a guarded-off instruction produces, which satisfies the
 /// pairing invariant by construction.
 pub fn trivial_accumulator() -> DeferredAccumulator {
-    DeferredAccumulator::new(&Accumulator::<S>::trivial(&[]))
+    DeferredAccumulator::new(&Accumulator::<Bls12>::trivial(&[]))
         .expect("the trivial accumulator is collapsed")
 }
 
 /// Rejects `acc` unless it is collapsed and fixed-base-resolved, as it must be
 /// before it is converted to public-input form.
-pub fn check_collapsed(acc: &AssignedAccumulator<S>) -> Result<(), Error> {
+pub fn check_collapsed(acc: &AssignedAccumulator<Bls12>) -> Result<(), Error> {
     if !acc.is_collapsed() {
         return Err(Error::Synthesis(
             "the accumulator is not collapsed and fixed-base-resolved".into(),
@@ -54,7 +56,7 @@ pub fn accumulate_offcircuit(accs: &[DeferredAccumulator]) -> anyhow::Result<Def
         bail!("`accumulate` needs at least two accumulators");
     }
     let accs: Vec<_> = accs.iter().map(|acc| acc.to_accumulator()).collect();
-    let mut acc = Accumulator::accumulate(&accs);
+    let mut acc = Accumulator::accumulate::<PoseidonChip<outer::Scalar>>(&accs);
     acc.collapse();
     DeferredAccumulator::new(&acc)
         .ok_or_else(|| anyhow!("an accumulated accumulator failed to collapse"))
@@ -64,8 +66,8 @@ pub fn accumulate_offcircuit(accs: &[DeferredAccumulator]) -> anyhow::Result<Def
 pub fn accumulate_incircuit(
     std: &ZkStdLib,
     layouter: &mut impl Layouter<outer::Scalar>,
-    accs: &[AssignedAccumulator<S>],
-) -> Result<AssignedAccumulator<S>, Error> {
+    accs: &[AssignedAccumulator<Bls12>],
+) -> Result<AssignedAccumulator<Bls12>, Error> {
     if accs.len() < 2 {
         return Err(Error::Synthesis(
             "`accumulate` needs at least two accumulators".into(),
@@ -74,8 +76,10 @@ pub fn accumulate_incircuit(
     // `accumulate` hashes the public-input form of its inputs.
     accs.iter().try_for_each(check_collapsed)?;
     let bls = std.bls12_381();
-    let mut acc = std.verifier().accumulate(layouter, accs)?;
-    acc.collapse(layouter, bls, bls.scalar_field_chip())?;
+    let scalar_chip = bls.scalar_field_chip();
+    let mut acc =
+        AssignedAccumulator::accumulate(layouter, bls, scalar_chip, std.poseidon_chip(), accs)?;
+    acc.collapse(layouter, bls, scalar_chip)?;
     Ok(acc)
 }
 

@@ -27,15 +27,22 @@ panic = "abort"
 
 # base-crypto 1.1.0, serialize 1.2.0, and transient-crypto 4.0.0 are not yet
 # published to crates.io; resolve them from the midnight-ledger repository, at
-# the merge commit of midnight-ledger PR #791 (`DeferredAccumulator::new`) on ledger-10.
+# the tip of `iquerejeta/zk-stdlib-v3` (ledger-10 on midnight-zk-stdlib 3.0.0-rc.1).
 # They all come from the same rev so their interlinked path dependencies unify
 # to a single source.
 [patch.crates-io]
-midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "6f72b82f0a86e32622538bf2e036c43d5b6e64b8" }
-midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "6f72b82f0a86e32622538bf2e036c43d5b6e64b8" }
-midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "6f72b82f0a86e32622538bf2e036c43d5b6e64b8" }
+midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "36dd9a3d6356288a3db2636b3bf86047b5c9da82" }
+midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "36dd9a3d6356288a3db2636b3bf86047b5c9da82" }
+midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "36dd9a3d6356288a3db2636b3bf86047b5c9da82" }
 # Not needed for the build itself, but without this transient-crypto pulls
 # storage-core (and its macro crates) from crates.io at the same name+version
 # as the git copies above, and nix's importCargoLock cannot vendor the same
 # name+version from two sources.
-midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "6f72b82f0a86e32622538bf2e036c43d5b6e64b8" }
+midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "36dd9a3d6356288a3db2636b3bf86047b5c9da82" }
+
+# midnight-zk-stdlib 3.0.0-rc.1 and its sibling crates are not published to
+# crates.io; resolve them from the midnight-zk release tag.
+midnight-curves = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }
+midnight-proofs = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }
+midnight-circuits = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }
+midnight-zk-stdlib = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }

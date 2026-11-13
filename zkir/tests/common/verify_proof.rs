@@ -31,7 +31,7 @@ use midnight_proofs::plonk;
 use midnight_proofs::poly::kzg::params::ParamsKZG;
 use midnight_proofs::utils::SerdeFormat;
 use midnight_zk_stdlib::{
-    MidnightPK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
+    KZG, MidnightPK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
 };
 use midnight_zkir::IrSource;
 use midnight_zkir::ir::IrMinorVersion;
@@ -193,7 +193,7 @@ impl Relation for SingleScalarRelation {
 /// Keygen for `R` at its own `k`, returning the VK as a `Processed` blob.
 pub async fn inner_setup_for<R: Relation + Default>(
     label: &str,
-) -> (ParamsProver, MidnightPK<R>, Vec<u8>) {
+) -> (ParamsProver, MidnightPK<R, KZG>, Vec<u8>) {
     let k = u8::try_from(optimal_k(&R::default())).expect("inner k fits in u8");
     inner_setup_at::<R>(label, k).await
 }
@@ -202,7 +202,7 @@ pub async fn inner_setup_for<R: Relation + Default>(
 pub async fn inner_setup_at<R: Relation + Default>(
     label: &str,
     k: u8,
-) -> (ParamsProver, MidnightPK<R>, Vec<u8>) {
+) -> (ParamsProver, MidnightPK<R, KZG>, Vec<u8>) {
     let relation = R::default();
     println!("inner circuit k = {k} ({label})");
 
@@ -229,12 +229,12 @@ pub fn prove_inner_for<R: Relation + Default>(
     label: &str,
     instance: &R::Instance,
     witness: R::Witness,
-    inner_pk: &MidnightPK<R>,
+    inner_pk: &MidnightPK<R, KZG>,
     inner_srs: &ParamsProver,
     rng: &mut ChaCha20Rng,
 ) -> Vec<u8> {
     let t = Instant::now();
-    let proof = prove::<R, PoseidonState<Fq>>(
+    let proof = prove::<R, PoseidonState<Fq>, KZG>(
         inner_srs.as_ref(),
         inner_pk,
         &R::default(),

@@ -149,7 +149,7 @@ pub fn encode_incircuit(
 
         CircuitValue::Accumulator(acc) => {
             check_collapsed(acc)?;
-            std_lib.verifier().as_public_input(layouter, acc)
+            acc.in_circuit_as_public_input(layouter, std_lib.bls12_381())
         }
     }?;
     Ok(encoded.into_iter().map(CircuitValue::Native).collect())
@@ -304,15 +304,14 @@ mod tests {
     /// A collapsed accumulator with random points on both sides, which does
     /// not satisfy the pairing invariant.
     fn random_accumulator() -> IrValue {
-        use midnight_circuits::verifier::{Accumulator, Msm, SelfEmulation};
-        use midnight_curves::Bls12;
-        use midnight_proofs::poly::kzg::params::ParamsKZG;
-        use transient_crypto::proofs::InnerSelfEmulation as S;
+        use midnight_circuits::verifier::{Accumulator, Msm, Point};
+        use midnight_curves::{Bls12, G1Projective};
+        use midnight_proofs::poly::{PolynomialLabel, kzg::params::ParamsKZG};
         let side = || {
-            Msm::<S>::new(
-                &[<S as SelfEmulation>::C::random(OsRng)],
+            Msm::<Bls12>::new(
+                &[Point::Variable(G1Projective::random(OsRng))],
                 &[F::ONE],
-                &Default::default(),
+                &[PolynomialLabel::NoLabel],
             )
         };
         let acc = Accumulator::new(side(), side());

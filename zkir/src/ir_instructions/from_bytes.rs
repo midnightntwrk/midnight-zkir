@@ -299,16 +299,11 @@ pub fn from_bytes_incircuit(
                     bytes.len()
                 ))
             })?;
-            let value = values.map(|v| {
-                <&[u8; 32]>::try_from(v.as_slice())
-                    .ok()
-                    .and_then(|b| Option::from(curve25519::Curve25519::from_bytes(b)))
-                    .and_then(|p: curve25519::Curve25519| Curve25519Subgroup::from_edwards(p.0))
-                    .unwrap_or_else(Curve25519Subgroup::generator)
-            });
+            // The gadget witnesses the point from `bytes` itself, and fails
+            // synthesis on an invalid encoding.
             std_lib
                 .curve25519()
-                .from_canonical_compressed_bytes(layouter, bytes, value)
+                .from_canonical_compressed_bytes(layouter, bytes)
                 .map(Curve25519Point)
         }
 

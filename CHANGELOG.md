@@ -9,6 +9,11 @@
   `verify_accumulator` instructions (ZKIR 4). `prepare_verification`  outputs an
   accumulator, which must reach exactly one `verify_accumulator` (possibly
   through `accumulate`).
+- Bump `midnight-zk-stdlib` to 3.0.0-rc.1 and `midnight-circuits` to
+  8.0.0-rc.1, proving with the `KZG` commitment scheme. Keys are now tagged
+  `verifier-key[v9]` and `prover-key[v8](ir-source[v3-generic])`, and their
+  bytes start with a commitment-scheme id, so keys built with stdlib 2 no
+  longer load.
 
 ## ZKIR 3.2.0
 

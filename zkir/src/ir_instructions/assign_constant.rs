@@ -11,9 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use midnight_circuits::instructions::{
-    AssertionInstructions, AssignmentInstructions, PublicInputInstructions,
-};
+use midnight_circuits::instructions::{AssertionInstructions, AssignmentInstructions};
+use midnight_circuits::verifier::AssignedAccumulator;
 use midnight_proofs::{
     circuit::{Layouter, Value},
     plonk::Error,
@@ -103,15 +102,17 @@ pub fn assign_constant_incircuit(
         // midnight-circuits has no fixed assignment of an accumulator, so it is
         // witnessed and its encoding pinned to the constant one.
         IrValue::Accumulator(acc) => {
-            let verifier = std_lib.verifier();
-            let assigned = verifier.assign_collapsed_accumulator(
+            let bls = std_lib.bls12_381();
+            let assigned = AssignedAccumulator::assign_collapsed(
                 layouter,
+                bls,
+                bls.scalar_field_chip(),
                 &[],
                 Value::known(acc.to_accumulator()),
             )?;
             check_collapsed(&assigned)?;
-            for (wire, constant) in verifier
-                .as_public_input(layouter, &assigned)?
+            for (wire, constant) in assigned
+                .in_circuit_as_public_input(layouter, bls)?
                 .iter()
                 .zip(acc.as_public_input())
             {

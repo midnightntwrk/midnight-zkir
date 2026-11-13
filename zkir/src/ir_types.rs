@@ -20,7 +20,9 @@ use midnight_circuits::{
     },
     verifier::AssignedAccumulator,
 };
-use midnight_curves::{Fr as JubjubFr, JubjubExtended, JubjubSubgroup, curve25519, k256, p256};
+use midnight_curves::{
+    Bls12, Fr as JubjubFr, JubjubExtended, JubjubSubgroup, curve25519, k256, p256,
+};
 use midnight_proofs::{circuit::Value, plonk::Error};
 #[cfg(feature = "proptest")]
 use proptest::{
@@ -31,7 +33,7 @@ use proptest::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serialize::{Deserializable, Serializable, Tagged};
 use transient_crypto::curve::{Fr, outer};
-use transient_crypto::proofs::{DeferredAccumulator, InnerSelfEmulation as S, accumulator_pi_len};
+use transient_crypto::proofs::{DeferredAccumulator, accumulator_pi_len};
 
 use crate::ir_instructions::accumulate::trivial_accumulator;
 
@@ -560,7 +562,7 @@ pub enum CircuitValue {
     Curve25519Base(AssignedField<F, curve25519::Fp, MEP>),
     Curve25519Scalar(AssignedField<F, curve25519::Scalar, MEP>),
 
-    Accumulator(AssignedAccumulator<S>),
+    Accumulator(AssignedAccumulator<Bls12>),
 }
 
 impl CircuitValue {
@@ -702,7 +704,7 @@ impl_enum_from_try_from!(CircuitValue, Error, Error::Synthesis;
     Curve25519Base => AssignedField<F, curve25519::Fp, MEP>,
     Curve25519Scalar => AssignedField<F, curve25519::Scalar, MEP>,
 
-    Accumulator => AssignedAccumulator<S>,
+    Accumulator => AssignedAccumulator<Bls12>,
 );
 
 #[cfg(test)]

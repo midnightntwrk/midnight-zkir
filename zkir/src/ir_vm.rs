@@ -1778,7 +1778,8 @@ impl Relation for IrSource {
                     let acc: AssignedAccumulator<_> =
                         resolve_operand(std, layouter, &memory, input)?.try_into()?;
                     check_collapsed(&acc)?;
-                    std.verifier().constrain_as_public_input(layouter, &acc)?;
+                    let bls = std.bls12_381();
+                    acc.constrain_as_public_input(layouter, bls, bls.scalar_field_chip())?;
                 }
                 // The guard is off-circuit bookkeeping only: `preprocess` already
                 // resolved it, binding the empty blob where it was off, and

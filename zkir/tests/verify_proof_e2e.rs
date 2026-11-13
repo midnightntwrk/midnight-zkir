@@ -46,22 +46,20 @@ use std::ops::Rem;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use group::Group;
 use midnight_circuits::biguint::AssignedBigUint;
 use midnight_circuits::hash::poseidon::PoseidonState;
 use midnight_circuits::instructions::{
     AssertionInstructions, AssignmentInstructions, PublicInputInstructions,
 };
 use midnight_circuits::types::{AssignedBit, AssignedNative};
-use midnight_circuits::verifier::SelfEmulation;
-use midnight_curves::{Bls12, Fq};
+use midnight_curves::Fq;
 use midnight_proofs::circuit::{Layouter, Value};
 use midnight_proofs::plonk;
-use midnight_proofs::poly::kzg::KZGCommitmentScheme;
 use midnight_proofs::transcript::{CircuitTranscript, Hashable, Sampleable, Transcript};
 use midnight_proofs::utils::SerdeFormat;
 use midnight_zk_stdlib::{
-    MidnightPK, MidnightVK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
+    KZG, MidnightPK, MidnightVK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk,
+    setup_vk,
 };
 use midnight_zkir::IrSource;
 use midnight_zkir::ir_instructions::accumulate::trivial_accumulator;
@@ -74,8 +72,8 @@ use rand_chacha::ChaCha20Rng;
 use serialize::{Deserializable, Serializable};
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{
-    InnerProofWitness, InnerSelfEmulation, ParamsProver, Proof, ProofPreimage, ProverKey,
-    TranscriptHash, VerifierKey, Zkir, accumulator_pi_len,
+    InnerProofWitness, ParamsProver, Proof, ProofPreimage, ProverKey, TranscriptHash, VerifierKey,
+    Zkir, accumulator_pi_len,
 };
 
 use crate::verify_proof_common::{
@@ -187,7 +185,7 @@ async fn blake2b_transcript_proof_is_rejected() {
     let fixture = pinned_fixture().await;
 
     // As `prove_inner`, but with the wrong transcript.
-    let proof = prove::<RsaSignatureRelation, TranscriptHash>(
+    let proof = prove::<RsaSignatureRelation, TranscriptHash, KZG>(
         fixture.inner_srs.as_ref(),
         &fixture.inner_pk,
         &RsaSignatureRelation,
@@ -488,9 +486,9 @@ async fn impact_between_two_proofs_leaves_accumulators_intact() {
     }
 }
 
-/// A proof made under a different verifying key is rejected. The same relation
-/// in a larger domain gives a same-length proof, caught by the pairing; a
-/// different relation fails in preparation.
+/// A proof made under a different verifying key is rejected. Both the same
+/// relation in a larger domain and a different relation give a same-length
+/// proof, so both are caught by the pairing.
 #[actix_rt::test]
 #[ignore = "slow: builds and proves a high-k outer circuit"]
 async fn proof_from_another_vk_is_rejected() {
@@ -548,8 +546,8 @@ async fn proof_from_another_vk_is_rejected() {
     .await;
     assert_eq!(
         stage,
-        Rejection::AtPreparation,
-        "a proof of another relation must fail in preparation"
+        Rejection::AtPairing,
+        "a proof of another relation must be caught by the pairing"
     );
 }
 
@@ -825,15 +823,10 @@ fn interleaved_ir(a: &InnerProof, b: &InnerProof) -> IrSource {
 
 /// The byte range and type of each value read while preparing `proof`.
 fn proof_reads(vk_blob: &[u8], instance: &[Fq], proof: &[u8]) -> Vec<(Range<usize>, &'static str)> {
-    let vk = MidnightVK::read(&mut &vk_blob[..], SerdeFormat::Processed).expect("inner vk");
+    let vk = MidnightVK::<KZG>::read(&mut &vk_blob[..], SerdeFormat::Processed).expect("inner vk");
     let mut transcript = RecordingTranscript::init_from_bytes(proof);
-    plonk::prepare::<Fq, KZGCommitmentScheme<Bls12>, RecordingTranscript>(
-        vk.vk(),
-        &[&[<InnerSelfEmulation as SelfEmulation>::C::identity()]],
-        &[&[instance]],
-        &mut transcript,
-    )
-    .expect("prepare a valid proof");
+    plonk::prepare::<Fq, KZG, RecordingTranscript>(vk.vk(), &[], &[&[], instance], &mut transcript)
+        .expect("prepare a valid proof");
     transcript.reads
 }
 
@@ -990,7 +983,8 @@ impl Relation for RecursiveRelation {
         let on: AssignedBit<Fq> = std_lib.assign_fixed(layouter, true)?;
         let acc =
             prepare_verification_incircuit(std_lib, layouter, &self.inner_vk, &[x], witness, &on)?;
-        std_lib.verifier().constrain_as_public_input(layouter, &acc)
+        let bls = std_lib.bls12_381();
+        acc.constrain_as_public_input(layouter, bls, bls.scalar_field_chip())
     }
 
     fn used_chips(&self) -> ZkStdLibArch {
@@ -1024,13 +1018,13 @@ async fn prove_recursive(
     instance: &Vec<Fq>,
     witness: Vec<u8>,
     rng: &mut ChaCha20Rng,
-) -> (Vec<u8>, MidnightVK) {
+) -> (Vec<u8>, MidnightVK<KZG>) {
     let k = optimal_k(relation) as u8;
     println!("recursive circuit k = {k}");
     let srs = srs().params_for(k);
     let vk = setup_vk(srs.as_ref(), relation);
     let pk = setup_pk(relation, &vk);
-    let proof = prove::<RecursiveRelation, PoseidonState<Fq>>(
+    let proof = prove::<RecursiveRelation, PoseidonState<Fq>, KZG>(
         srs.as_ref(),
         &pk,
         relation,
@@ -1093,7 +1087,7 @@ fn pinned_statement() -> ((Modulus, Message), Signature) {
 }
 
 /// [`inner_setup_for`] for [`RsaSignatureRelation`].
-async fn inner_setup() -> (ParamsProver, MidnightPK<RsaSignatureRelation>, Vec<u8>) {
+async fn inner_setup() -> (ParamsProver, MidnightPK<RsaSignatureRelation, KZG>, Vec<u8>) {
     inner_setup_for::<RsaSignatureRelation>("rsa").await
 }
 
@@ -1101,7 +1095,7 @@ async fn inner_setup() -> (ParamsProver, MidnightPK<RsaSignatureRelation>, Vec<u
 fn prove_inner(
     instance: &(Modulus, Message),
     signature: Signature,
-    inner_pk: &MidnightPK<RsaSignatureRelation>,
+    inner_pk: &MidnightPK<RsaSignatureRelation, KZG>,
     inner_srs: &ParamsProver,
     rng: &mut ChaCha20Rng,
 ) -> Vec<u8> {
@@ -1270,7 +1264,7 @@ async fn outer_setup(
 /// keygen is slow.
 struct PinnedFixture {
     pub inner_srs: ParamsProver,
-    pub inner_pk: MidnightPK<RsaSignatureRelation>,
+    pub inner_pk: MidnightPK<RsaSignatureRelation, KZG>,
     pub vk_blob: Vec<u8>,
     pub instance: (Modulus, Message),
     pub signature: Signature,

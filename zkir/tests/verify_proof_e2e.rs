@@ -486,9 +486,9 @@ async fn impact_between_two_proofs_leaves_accumulators_intact() {
     }
 }
 
-/// A proof made under a different verifying key is rejected. The same relation
-/// in a larger domain gives a same-length proof, caught by the pairing; a
-/// different relation fails in preparation.
+/// A proof made under a different verifying key is rejected. Both the same
+/// relation in a larger domain and a different relation give a same-length
+/// proof, so both are caught by the pairing.
 #[actix_rt::test]
 #[ignore = "slow: builds and proves a high-k outer circuit"]
 async fn proof_from_another_vk_is_rejected() {
@@ -546,8 +546,8 @@ async fn proof_from_another_vk_is_rejected() {
     .await;
     assert_eq!(
         stage,
-        Rejection::AtPreparation,
-        "a proof of another relation must fail in preparation"
+        Rejection::AtPairing,
+        "a proof of another relation must be caught by the pairing"
     );
 }
 

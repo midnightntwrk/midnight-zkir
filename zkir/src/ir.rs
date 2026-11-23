@@ -29,6 +29,7 @@ use transient_crypto::proofs::{
     ParamsProverProvider, Proof, ProofPreimage, ProverKey, ProvingError, TranscriptHash, Zkir,
 };
 
+use crate::ir_instructions::unbound_vk::InnerVerifyingKey;
 use crate::ir_types::IrType;
 
 const PK_COMPRESSION_LEVEL: u32 = 6;
@@ -88,28 +89,37 @@ impl IrSource {
     }
 }
 
-impl Zkir for IrSource {
-    type ProverKey = midnight_zk_stdlib::MidnightPK<IrSource, KZG>;
-
-    fn check(
+impl IrSource {
+    /// Checks a proof preimage, as [`Zkir::check`] does, with `inner_vks`
+    /// holding the keys of its `AssignUnboundVk` instructions, as in
+    /// [`IrSource::prove_with_inner_vks`].
+    pub fn check_with_inner_vks(
         &self,
         preimage: &ProofPreimage,
-    ) -> std::result::Result<Vec<Option<usize>>, transient_crypto::proofs::ProvingError> {
-        Ok(self.preprocess(preimage)?.pi_skips)
+        inner_vks: &[Option<InnerVerifyingKey>],
+    ) -> Result<Vec<Option<usize>>, ProvingError> {
+        Ok(self
+            .preprocess_with_inner_vks(preimage, inner_vks)?
+            .pi_skips)
     }
 
-    async fn prove(
+    /// Proves this circuit, as [`Zkir::prove`] does, with `inner_vks` holding the
+    /// keys of its `AssignUnboundVk` instructions, one per instruction in
+    /// instruction order. `None` stands for a key that is not supplied, which
+    /// is only allowed where the instruction is guarded off.
+    pub async fn prove_with_inner_vks(
         &self,
         rng: impl Rng + CryptoRng,
         params: &impl ParamsProverProvider,
         pk: ProverKey<Self>,
         preimage: &ProofPreimage,
+        inner_vks: &[Option<InnerVerifyingKey>],
     ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
         use midnight_zk_stdlib::prove;
         use transient_crypto::proofs::{DeferredAccumulator, accumulator_pi_len};
 
         let params_k = params.get_params(pk.init()?.k()).await?;
-        let preproc = self.preprocess(preimage)?;
+        let preproc = self.preprocess_with_inner_vks(preimage, inner_vks)?;
         let pis = preproc.pis.clone();
         let pi_skips = preproc.pi_skips.clone();
 
@@ -145,6 +155,28 @@ impl Zkir for IrSource {
             statement,
             pi_skips,
         ))
+    }
+}
+
+impl Zkir for IrSource {
+    type ProverKey = midnight_zk_stdlib::MidnightPK<IrSource, KZG>;
+
+    fn check(
+        &self,
+        preimage: &ProofPreimage,
+    ) -> std::result::Result<Vec<Option<usize>>, transient_crypto::proofs::ProvingError> {
+        self.check_with_inner_vks(preimage, &[])
+    }
+
+    async fn prove(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        pk: ProverKey<Self>,
+        preimage: &ProofPreimage,
+    ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
+        self.prove_with_inner_vks(rng, params, pk, preimage, &[])
+            .await
     }
 
     fn k(&self) -> u8 {
@@ -396,6 +428,20 @@ impl Tagged for Operand {
     }
 }
 tag_enforcement_test!(Operand);
+
+/// The verifying key a `PrepareVerification` verifies an inner proof under.
+#[cfg_attr(feature = "proptest", derive(Arbitrary))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Serializable)]
+#[serde(rename_all = "snake_case")]
+#[tag = "zkir-vk-ref[v1]"]
+pub enum VkRef {
+    /// A key fixed in the circuit, carried in [`IrSource::inner_vks`] and named
+    /// by its `vk_id` (see [`crate::vk_id`]), a `0x`-hex immediate.
+    Fixed(Operand),
+    /// A key witnessed privately, as a `BoundVk` variable produced by `BindVk`.
+    Bound(Operand),
+}
+tag_enforcement_test!(VkRef);
 
 /// Serde helpers for the `Constant` instruction's `encoding` field. The
 /// encoding is stored as `Vec<Fr>` but (de)serialized as a list of hex
@@ -1320,8 +1366,11 @@ pub enum Instruction {
     /// A guarded-off instruction still consumes one `InnerProof` binding,
     /// but never depends on its contents.
     ///
-    /// The VK is fixed circuit data, resolved out-of-band: `vk_hash` binds
-    /// which VK the circuit was compiled against.
+    /// The VK is either fixed circuit data, named by its `vk_id` and carried
+    /// in [`IrSource::inner_vks`], or a `BoundVk` produced by `BindVk`.
+    ///
+    /// WARNING: a bound key must be bound under the same `guard`, and declare
+    /// as many public inputs as `instance` holds.
     ///
     /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
     /// the `InnerProof` instruction that produces `proof`.
@@ -1334,9 +1383,8 @@ pub enum Instruction {
         /// The boolean condition under which the inner proof is verified. A
         /// variable reference, or a `0x`-hex immediate for a constant guard.
         guard: Operand,
-        /// Hash of the inner proof verifying key.
-        #[serde(with = "const_hex::serde")]
-        vk_hash: Vec<u8>,
+        /// The inner proof's verifying key.
+        vk: VkRef,
         /// The inner proof's public inputs (each of type `Native`).
         instance: Vec<Operand>,
         /// The proof to verify, as bound by an `InnerProof` instruction.
@@ -1388,36 +1436,57 @@ pub enum Instruction {
     },
     /// Witnesses the verifying key of an inner circuit of size `2^k` with
     /// every chip of the standard library enabled (see
-    /// [`crate::ir_instructions::unbound_vk::INNER_ARCH`]).
+    /// [`crate::ir_instructions::unbound_vk::INNER_ARCH`]), under a guard
+    /// condition.
     ///
     /// Off-circuit (preprocessing):
-    /// Reads the key from the private transcript outputs, serialized
-    /// (`VerifyingKey::write`, `Processed` format) and packed as a `Bytes`
-    /// value. Errors if the key is not of size `2^k`.
+    /// Takes the next key handed to [`IrSource::check_with_inner_vks`] or
+    /// [`IrSource::prove_with_inner_vks`]: one slot per instruction, in
+    /// instruction order, whatever its guard. Errors if the key is not of size
+    /// `2^k` or not of the `INNER_ARCH` shape. If `guard` is `false` the slot
+    /// is ignored, and a dummy key of the same shape and size is used.
     ///
     /// In-circuit:
     /// The key is a free prover witness, which must be bound with `BindVk`
-    /// before it can be trusted.
+    /// before it can be used.
     ///
-    /// One output, the `UnboundVk`
+    /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
+    /// the `BindVk` that binds `output`.
+    ///
+    /// One output, the `UnboundVk`.
     AssignUnboundVk {
-        /// The (constant) log2 of the size of the inner circuit
+        /// The boolean condition under which the key is supplied.
+        guard: Operand,
+        /// The (constant) log2 of the size of the inner circuit.
         k: u8,
-        /// The output variable name
+        /// The (constant) number of public inputs of the inner circuit, which
+        /// the key's `vk_id` covers.
+        nb_public_inputs: u32,
+        /// The output variable name.
         output: Identifier,
     },
-    /// Binds `vk` to `hash`, asserting that `hash` is the hash of `vk`.
+    /// Binds `vk` to `hash`, asserting that `hash` is its `vk_id` (see
+    /// [`crate::vk_id`]) if `guard` is `true`.
     ///
     /// WARNING: this only guarantees that `vk` matches `hash`. It is up to the
-    /// caller to guarantee the integrity of `hash`, e.g. by making it a public
-    /// input or a constant.
+    /// caller to guarantee the integrity of `hash`, e.g. by making it public
+    /// with `Impact`, or a constant. Note that a public `hash` reveals which key
+    /// the proof is verified under.
     ///
-    /// No outputs
+    /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
+    /// the `AssignUnboundVk` that produces `vk`, and of every
+    /// `PrepareVerification` that uses `output`.
+    ///
+    /// One output, the `BoundVk`.
     BindVk {
-        /// The `UnboundVk` to bind
+        /// The boolean condition under which the binding is enforced.
+        guard: Operand,
+        /// The `UnboundVk` to bind.
         vk: Operand,
-        /// The expected hash, a `Native`
+        /// The expected `vk_id`, a `Native`.
         hash: Operand,
+        /// The output variable name.
+        output: Identifier,
     },
     //
     // ==================== END OF ZKIR 4 INSTRUCTIONS ====================

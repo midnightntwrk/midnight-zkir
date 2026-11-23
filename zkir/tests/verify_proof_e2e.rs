@@ -78,7 +78,7 @@ use transient_crypto::proofs::{
 
 use crate::verify_proof_common::{
     BINDING_INPUT, InnerProof, inner_setup_at, inner_setup_for, load_ir, preimage_with,
-    prove_inner_for, scalar_inner_proof, scalar_inner_proofs, srs, test_rng, vk_hash_hex, with_vks,
+    prove_inner_for, scalar_inner_proof, scalar_inner_proofs, srs, test_rng, vk_ref, with_vks,
 };
 
 // ---------------------------------------------------------------------------
@@ -1125,9 +1125,9 @@ fn verify_and_expose(
 ) -> String {
     let verify = |instance: &[String]| {
         format!(
-            r#"{{ "op": "prepare_verification", "guard": "{guard}", "vk_hash": "0x{hash}",
+            r#"{{ "op": "prepare_verification", "guard": "{guard}", "vk": {vk},
                   "instance": [{ops}], "proof": "%p_{i}", "output": "%a_{i}" }}"#,
-            hash = vk_hash_hex(vk_blob),
+            vk = vk_ref(vk_blob),
             ops = instance.join(", "),
         )
     };

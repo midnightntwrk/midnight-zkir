@@ -23,4 +23,5 @@ pub mod testing;
 mod type_inference;
 
 pub use ir::{Identifier, Instruction, IrSource};
+pub use ir_instructions::unbound_vk::vk_id;
 pub use ir_vm::Preprocessed;

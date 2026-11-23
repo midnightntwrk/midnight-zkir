@@ -35,17 +35,18 @@ use crate::ir_instructions::inv::{inv_incircuit, inv_offcircuit};
 use crate::ir_instructions::mul::{mul_incircuit, mul_offcircuit};
 use crate::ir_instructions::neg::{neg_incircuit, neg_offcircuit};
 use crate::ir_instructions::prepare_verification::{
+    fixed_vk_name, prepare_verification_bound_incircuit, prepare_verification_bound_offcircuit,
     prepare_verification_incircuit, prepare_verification_offcircuit,
 };
 use crate::ir_instructions::select::{select_incircuit, select_offcircuit};
 use crate::ir_instructions::to_bytes::{to_bytes_incircuit, to_bytes_offcircuit};
 use crate::ir_instructions::unbound_vk::{
-    assign_unbound_vk_incircuit, assign_unbound_vk_offcircuit, bind_vk_incircuit,
-    bind_vk_offcircuit,
+    InnerVerifyingKey, assign_unbound_vk_incircuit, assign_unbound_vk_offcircuit,
+    bind_vk_incircuit, bind_vk_offcircuit,
 };
 use crate::ir_types::{BYTES_PER_FIELD_ELEMENT, CircuitValue, IrType, IrValue, MAX_BYTES_LEN};
 
-use super::ir::{Identifier, Instruction as I, IrSource, Operand};
+use super::ir::{Identifier, Instruction as I, IrSource, Operand, VkRef};
 use anyhow::{anyhow, bail};
 use base_crypto::fab::{Alignment, AlignmentAtom, AlignmentSegment};
 use base_crypto::repr::BinaryHashRepr;
@@ -242,13 +243,25 @@ fn fab_decode_to_bytes_atom(
 impl IrSource {
     /// Performs a non-ZK run of a circuit, to ensure that constraints hold, and
     /// to produce a public input vector, and public input skip information.
-    pub(crate) fn preprocess(
+    /// `supplied_vks` holds the keys of the circuit's `AssignUnboundVk`
+    /// instructions, one per instruction in instruction order.
+    pub(crate) fn preprocess_with_inner_vks(
         &self,
         preimage: &ProofPreimage,
+        supplied_vks: &[Option<InnerVerifyingKey>],
     ) -> Result<Preprocessed, ProvingError> {
         self.validate_inner_proofs()?;
         self.check_accumulator_lifecycle()?;
+        let private_vks = self.validate_private_vks()?;
         let inner_vks = self.resolve_inner_vks()?;
+        let slots = self.inner_vk_slots();
+        if supplied_vks.len() != slots {
+            bail!(
+                "Expected {slots} inner verifying keys (one per `assign_unbound_vk`), received {}",
+                supplied_vks.len()
+            );
+        }
+        let mut supplied_vks_idx: usize = 0;
 
         let mut memory: HashMap<Identifier, IrValue> = HashMap::new();
         let mut proofs: HashMap<Identifier, Vec<u8>> = HashMap::new();
@@ -866,18 +879,28 @@ impl IrSource {
                     let value = decode_offcircuit(encoding, val_t)?;
                     memory.insert(output.clone(), value);
                 }
-                I::AssignUnboundVk { k, output } => {
-                    let (vk, nb_elements) = assign_unbound_vk_offcircuit(
-                        &preimage.private_transcript[private_transcript_outputs_idx..],
-                        *k,
-                    )?;
-                    private_transcript_outputs_idx += nb_elements;
+                I::AssignUnboundVk {
+                    guard, k, output, ..
+                } => {
+                    let guard = resolve_operand_bool(&memory, guard)?;
+                    let slot = supplied_vks_idx;
+                    supplied_vks_idx += 1;
+                    let vk =
+                        assign_unbound_vk_offcircuit(supplied_vks[slot].as_ref(), slot, *k, guard)?;
                     memory.insert(output.clone(), vk);
                 }
-                I::BindVk { vk, hash } => {
+                I::BindVk {
+                    guard,
+                    vk,
+                    hash,
+                    output,
+                } => {
+                    let guard = resolve_operand_bool(&memory, guard)?;
+                    let nb_public_inputs = private_vks.unbound_nb_public_inputs(vk)?;
                     let vk = resolve_operand(&memory, vk)?;
                     let hash = resolve_operand(&memory, hash)?;
-                    bind_vk_offcircuit(vk, hash)?;
+                    let bound = bind_vk_offcircuit(vk, hash, nb_public_inputs, guard)?;
+                    memory.insert(output.clone(), bound);
                 }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {
@@ -901,7 +924,7 @@ impl IrSource {
                 }
                 I::PrepareVerification {
                     guard,
-                    vk_hash,
+                    vk,
                     instance,
                     proof,
                     output,
@@ -917,14 +940,20 @@ impl IrSource {
                         .get(proof)
                         .ok_or_else(|| anyhow!("not an inner proof: {:?}", proof))?;
 
-                    let vk_blob = inner_vks.get(vk_hash).ok_or_else(|| {
-                        anyhow!(
-                            "no verifying key for vk_hash 0x{}",
-                            const_hex::encode(vk_hash)
-                        )
-                    })?;
-
-                    let acc = prepare_verification_offcircuit(vk_blob, &instance, proof, guard)?;
+                    let acc = match vk {
+                        VkRef::Fixed(vk) => {
+                            let vk_blob = inner_vks.get(&fixed_vk_name(vk)?).ok_or_else(|| {
+                                anyhow!("no verifying key in `inner_vks` for vk_id {vk:?}")
+                            })?;
+                            prepare_verification_offcircuit(vk_blob, &instance, proof, guard)?
+                        }
+                        VkRef::Bound(vk) => {
+                            let IrValue::BoundVk(vk) = resolve_operand(&memory, vk)? else {
+                                bail!("`prepare_verification` takes a BoundVk, got {vk:?}");
+                            };
+                            prepare_verification_bound_offcircuit(&vk.0, &instance, proof, guard)?
+                        }
+                    };
                     memory.insert(output.clone(), IrValue::Accumulator(acc));
                 }
                 I::Accumulate { inputs, output } => {
@@ -1055,6 +1084,9 @@ impl Relation for IrSource {
         self.validate_inner_proofs()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
         self.check_accumulator_lifecycle()
+            .map_err(|e| Error::Synthesis(e.to_string()))?;
+        let private_vks = self
+            .validate_private_vks()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
         let inner_vks = self
             .resolve_inner_vks()
@@ -1721,14 +1753,43 @@ impl Relation for IrSource {
                     let assigned = assign_constant_incircuit(std, layouter, &value)?;
                     mem_insert(output.clone(), assigned, &mut memory)?;
                 }
-                I::AssignUnboundVk { k, output } => {
+                // The guard is enforced by the `BindVk` that binds the key.
+                I::AssignUnboundVk { k, output, .. } => {
                     let vk = assign_unbound_vk_incircuit(std, layouter, *k, witnessed(output)?)?;
                     mem_insert(output.clone(), vk, &mut memory)?;
                 }
-                I::BindVk { vk, hash } => {
+                I::BindVk {
+                    guard,
+                    vk,
+                    hash,
+                    output,
+                } => {
+                    let guard: AssignedBit<_> = {
+                        let guard = resolve_operand(std, layouter, &memory, guard)?;
+                        let guard: AssignedNative<_> = guard.try_into()?;
+                        std.convert(layouter, &guard)?
+                    };
+                    let nb_public_inputs = private_vks
+                        .unbound_nb_public_inputs(vk)
+                        .map_err(|e| Error::Synthesis(e.to_string()))?;
+                    let Operand::Variable(vk_id) = vk else {
+                        return Err(Error::Synthesis(
+                            "`bind_vk` takes an UnboundVk variable".into(),
+                        ));
+                    };
+                    let value = witnessed(vk_id)?;
                     let vk = resolve_operand(std, layouter, &memory, vk)?;
                     let hash = resolve_operand(std, layouter, &memory, hash)?;
-                    bind_vk_incircuit(std, layouter, vk, hash)?;
+                    let bound = bind_vk_incircuit(
+                        std,
+                        layouter,
+                        vk,
+                        value,
+                        hash,
+                        nb_public_inputs,
+                        &guard,
+                    )?;
+                    mem_insert(output.clone(), bound, &mut memory)?;
                 }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {
@@ -1752,7 +1813,7 @@ impl Relation for IrSource {
                 }
                 I::PrepareVerification {
                     guard,
-                    vk_hash,
+                    vk,
                     instance,
                     proof,
                     output,
@@ -1774,21 +1835,43 @@ impl Relation for IrSource {
                         Error::Synthesis(format!("not an inner proof: {proof:?}"))
                     })?;
 
-                    let vk_blob = inner_vks.get(vk_hash).ok_or_else(|| {
-                        Error::Synthesis(format!(
-                            "no verifying key for vk_hash 0x{}",
-                            const_hex::encode(vk_hash)
-                        ))
-                    })?;
-
-                    let acc = prepare_verification_incircuit(
-                        std,
-                        layouter,
-                        vk_blob,
-                        &assigned_instance,
-                        proof_value,
-                        &guard,
-                    )?;
+                    let acc = match vk {
+                        VkRef::Fixed(vk) => {
+                            let vk_blob = fixed_vk_name(vk)
+                                .ok()
+                                .and_then(|name| inner_vks.get(&name))
+                                .ok_or_else(|| {
+                                    Error::Synthesis(format!(
+                                        "no verifying key in `inner_vks` for vk_id {vk:?}"
+                                    ))
+                                })?;
+                            prepare_verification_incircuit(
+                                std,
+                                layouter,
+                                vk_blob,
+                                &assigned_instance,
+                                proof_value,
+                                &guard,
+                            )?
+                        }
+                        VkRef::Bound(vk) => {
+                            let CircuitValue::BoundVk(vk) =
+                                resolve_operand(std, layouter, &memory, vk)?
+                            else {
+                                return Err(Error::Synthesis(format!(
+                                    "`prepare_verification` takes a BoundVk, got {vk:?}"
+                                )));
+                            };
+                            prepare_verification_bound_incircuit(
+                                std,
+                                layouter,
+                                &vk,
+                                &assigned_instance,
+                                proof_value,
+                                &guard,
+                            )?
+                        }
+                    };
                     mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
                 }
                 I::Accumulate { inputs, output } => {

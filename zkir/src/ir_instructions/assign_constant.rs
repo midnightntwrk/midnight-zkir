@@ -124,6 +124,8 @@ pub fn assign_constant_incircuit(
             Ok(CircuitValue::Accumulator(assigned))
         }
 
-        IrValue::UnboundVk(_) => Err(Error::Synthesis("an UnboundVk cannot be a constant".into())),
+        IrValue::UnboundVk(_) | IrValue::BoundVk(_) => Err(Error::Synthesis(
+            "a verifying key cannot be a constant".into(),
+        )),
     }
 }

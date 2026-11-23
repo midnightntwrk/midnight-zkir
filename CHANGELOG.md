@@ -27,9 +27,19 @@ ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.
 - Add the `Accumulator` type and the `accumulate` and `verify_accumulator`
   instructions. `prepare_verification` outputs an accumulator, which must
   reach exactly one `verify_accumulator` (possibly through `accumulate`).
-- Add the `UnboundVk` type and the `AssignUnboundVk` and `BindVk`
-  instructions, which witness the verifying key of an inner circuit with every
-  chip enabled and bind it to a trusted hash.
+- Add private verifying keys: the `UnboundVk` and `BoundVk` types and the
+  `assign_unbound_vk` and `bind_vk` instructions. `assign_unbound_vk` witnesses
+  the key of an inner circuit of size `2^k` with every chip enabled, handed
+  over out of band through `IrSource::check_with_inner_vks` and
+  `IrSource::prove_with_inner_vks` (one key per instruction, in instruction
+  order); `bind_vk` binds it to its `vk_id`; and `prepare_verification`
+  verifies a proof under the resulting `BoundVk`. All three share one guard;
+  guarded off, no key is needed.
+- breaking: inner verifying keys are identified by `vk_id`, a domain-separated
+  Poseidon hash of midnight-zk's `vk_hash` and the number of public inputs,
+  for fixed and private keys alike. `prepare_verification` takes
+  `"vk": { "fixed": "0x<vk_id>" }` or `"vk": { "bound": "%var" }` in place of
+  the SHA-256 `vk_hash`, and `inner_vks` is indexed by `vk_id`.
 
 ### Dependencies
 

@@ -34,9 +34,10 @@ use midnight_zk_stdlib::{
     KZG, MidnightPK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
 };
 use midnight_zkir::IrSource;
+use midnight_zkir::ir::Operand;
+use midnight_zkir::ir_instructions::unbound_vk::fixed_vk_id;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use sha2::Digest;
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{
     InnerProofWitness, KeyLocation, ParamsProver, ParamsProverProvider, ParamsVerifier,
@@ -46,9 +47,33 @@ use transient_crypto::proofs::{
 /// The binding input every preimage carries, as public input 0.
 pub const BINDING_INPUT: u64 = 99;
 
-/// A VK blob's SHA-256, as hex without `0x`: the `vk_hash` `prepare_verification` stores.
-pub fn vk_hash_hex(vk_blob: &[u8]) -> String {
-    const_hex::encode(sha2::Sha256::digest(vk_blob))
+/// A `prepare_verification` `vk` field naming the fixed key `vk_blob` by its
+/// `vk_id`.
+pub fn vk_ref(vk_blob: &[u8]) -> String {
+    let id = fixed_vk_id(vk_blob).expect("a real verifying key");
+    format!(
+        r#"{{ "fixed": {} }}"#,
+        serde_json::to_string(&Operand::Immediate(id)).expect("operand serializes")
+    )
+}
+
+/// A `prepare_verification` `vk` field naming a fixed key by the stand-in
+/// `vk_id` `n`, for IR whose keys are never resolved.
+pub fn stub_vk_ref(n: u64) -> String {
+    format!(
+        r#"{{ "fixed": {} }}"#,
+        serde_json::to_string(&Operand::Immediate(Fr::from(n))).expect("operand serializes")
+    )
+}
+
+/// The blob of a [`SingleScalarRelation`] key at size `2^k`, for tests that
+/// need a real key in the side-table but verify nothing under it.
+pub fn scalar_vk_blob(k: u8) -> Vec<u8> {
+    let vk = setup_vk::<_, KZG>(srs().params_for(k).as_ref(), &SingleScalarRelation);
+    let mut vk_blob = Vec::new();
+    vk.write(&mut vk_blob, SerdeFormat::Processed)
+        .expect("serialize inner vk");
+    vk_blob
 }
 
 /// Parses an IR from its JSON parts.

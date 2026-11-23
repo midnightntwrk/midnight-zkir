@@ -40,6 +40,9 @@ ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.
   for fixed and private keys alike. `prepare_verification` takes
   `"vk": { "fixed": "0x<vk_id>" }` or `"vk": { "bound": "%var" }` in place of
   the SHA-256 `vk_hash`, and `inner_vks` is indexed by `vk_id`.
+- Add `zkir-spec/docs/zkir-v4-spec.md`, a delta specification of recursive
+  verification in ZKIR 4: accumulators, fixed and private inner keys,
+  `vk_id`, the key interface, and the related producer obligations.
 
 ### Dependencies
 

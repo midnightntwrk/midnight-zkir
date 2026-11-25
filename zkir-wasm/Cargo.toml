@@ -1,6 +1,6 @@
 [package]
 name = "midnight-zkir-wasm"
-version = "3.2.1"
+version = "3.2.2-tp.0"
 edition = "2024"
 license.workspace = true
 publish = false

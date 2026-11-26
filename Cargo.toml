@@ -25,21 +25,21 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# base-crypto 1.1.1, serialize 1.2.1, and transient-crypto 4.0.0 are not yet
-# published to crates.io; resolve them from the midnight-ledger repository, at
-# the alexshielded/bump-midnight-zk-3.0.0-rc.2 commit that adopts
-# midnight-zk-stdlib 3.0.0-rc.2.
-# They all come from the same rev so their interlinked path dependencies unify
+# base-crypto 1.1.1, serialize 1.2.1, and transient-crypto 4.0.0-rc.0 are not
+# yet published to crates.io; resolve them from the midnight-ledger repository,
+# at the transient-crypto-4.0.0-rc.0 tag that adopts midnight-zk-stdlib
+# 3.0.0-rc.2.
+# They all come from the same tag so their interlinked path dependencies unify
 # to a single source.
 [patch.crates-io]
-midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
-midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
-midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
+midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", tag = "transient-crypto-4.0.0-rc.0" }
+midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", tag = "transient-crypto-4.0.0-rc.0" }
+midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", tag = "transient-crypto-4.0.0-rc.0" }
 # Not needed for the build itself, but without this transient-crypto pulls
 # storage-core (and its macro crates) from crates.io at the same name+version
 # as the git copies above, and nix's importCargoLock cannot vendor the same
 # name+version from two sources.
-midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
+midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", tag = "transient-crypto-4.0.0-rc.0" }
 # The midnight-zk 3.0.0-rc.2 release candidates transient-crypto builds
 # against, which are not published to crates.io either.
 midnight-zk-stdlib = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.2" }

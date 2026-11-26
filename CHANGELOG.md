@@ -33,6 +33,11 @@ ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.
 - Move to midnight-zk-stdlib 3.0.0-rc.1 and the matching transient-crypto.
   Verifier keys now record how many accumulators their proofs carry, so keys
   generated before this change are rejected.
+- Move to midnight-zk-stdlib 3.0.0-rc.2 and the matching transient-crypto.
+  The range-check chip replaces the pow2range chip, so circuits use one
+  range-check group instead of four pow2range columns. This changes the
+  verifying keys of every circuit, and keys generated with 3.0.0-rc.1 are
+  rejected.
 
 ## ZKIR 3.2.0
 

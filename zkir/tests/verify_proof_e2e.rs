@@ -97,9 +97,6 @@ const IMPACT_INPUTS: usize = 3;
 /// The value that `Impact` discloses when guarded on.
 const DISCLOSED: u64 = 42;
 
-/// A larger domain than the RSA relation needs, giving it a different VK.
-const OVERSIZED_K: u8 = 13;
-
 /// RSA public exponent.
 const E: u64 = 3;
 
@@ -498,8 +495,9 @@ async fn proof_from_another_vk_is_rejected() {
     let fixture = pinned_fixture().await;
     let correct_proof = fixture.correct_proof(&mut rng);
 
+    let oversized_k = optimal_k(&RsaSignatureRelation) as u8 + 1;
     let (oversized_srs, oversized_pk, oversized_vk) =
-        inner_setup_at::<RsaSignatureRelation>("rsa, oversized domain", OVERSIZED_K).await;
+        inner_setup_at::<RsaSignatureRelation>("rsa, oversized domain", oversized_k).await;
     assert_ne!(
         fixture.vk_blob, oversized_vk,
         "setting the same relation up at a different k must give a different VK"
@@ -937,7 +935,7 @@ impl Relation for RsaSignatureRelation {
 
     fn used_chips(&self) -> ZkStdLibArch {
         ZkStdLibArch {
-            nr_pow2range_cols: 4,
+            nb_range_check_groups: 1,
             ..ZkStdLibArch::default()
         }
     }
@@ -992,7 +990,7 @@ impl Relation for RecursiveRelation {
         ZkStdLibArch {
             poseidon: true,
             bls12_381: true,
-            nr_pow2range_cols: 4,
+            nb_range_check_groups: 1,
             ..Default::default()
         }
     }

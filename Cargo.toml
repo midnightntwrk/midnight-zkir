@@ -25,24 +25,24 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# base-crypto 1.1.0, serialize 1.2.0, and transient-crypto 4.0.0 are not yet
+# base-crypto 1.1.1, serialize 1.2.1, and transient-crypto 4.0.0 are not yet
 # published to crates.io; resolve them from the midnight-ledger repository, at
-# a ledger-10 commit that adopts midnight-zk-stdlib 3.0.0-rc.1 and binds the
-# accumulator count in verifier keys.
+# the alexshielded/bump-midnight-zk-3.0.0-rc.2 commit that adopts
+# midnight-zk-stdlib 3.0.0-rc.2.
 # They all come from the same rev so their interlinked path dependencies unify
 # to a single source.
 [patch.crates-io]
-midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "9ec7289eb592ef4d2f38d12077a09dceea1af428" }
-midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "9ec7289eb592ef4d2f38d12077a09dceea1af428" }
-midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "9ec7289eb592ef4d2f38d12077a09dceea1af428" }
+midnight-base-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
+midnight-serialize = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
+midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
 # Not needed for the build itself, but without this transient-crypto pulls
 # storage-core (and its macro crates) from crates.io at the same name+version
 # as the git copies above, and nix's importCargoLock cannot vendor the same
 # name+version from two sources.
-midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "9ec7289eb592ef4d2f38d12077a09dceea1af428" }
-# The midnight-zk 3.0.0-rc.1 release candidates transient-crypto builds
+midnight-storage-core = { git = "https://github.com/midnightntwrk/midnight-ledger", rev = "1e6cab82c7d886b6789f11dd049658d05b4b1f7e" }
+# The midnight-zk 3.0.0-rc.2 release candidates transient-crypto builds
 # against, which are not published to crates.io either.
-midnight-zk-stdlib = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }
-midnight-circuits = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }
-midnight-proofs = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }
-midnight-curves = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.1" }
+midnight-zk-stdlib = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.2" }
+midnight-circuits = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.2" }
+midnight-proofs = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.2" }
+midnight-curves = { git = "https://github.com/midnightntwrk/midnight-zk", tag = "midnight-zk-stdlib-v3.0.0-rc.2" }

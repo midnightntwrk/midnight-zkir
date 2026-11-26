@@ -186,7 +186,7 @@ impl IrSource {
     ) -> Result<(HashMap<Identifier, IrType>, ZkStdLibArch), anyhow::Error> {
         let mut mem = TypeMemory::new(ZkStdLibArch {
             poseidon: self.do_communications_commitment,
-            nr_pow2range_cols: 4,
+            nb_range_check_groups: 1,
             ..ZkStdLibArch::default()
         });
 

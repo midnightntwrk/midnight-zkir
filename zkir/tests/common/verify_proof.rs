@@ -136,7 +136,7 @@ pub fn srs() -> &'static GeneratedParams {
         // rather than a hundred megabytes.
         let mut bytes = Vec::new();
         ParamsKZG::<Bls12>::unsafe_setup(1, srs_rng())
-            .write_custom(&mut bytes, SerdeFormat::RawBytesUnchecked)
+            .write(&mut bytes, SerdeFormat::RawBytesUnchecked)
             .expect("write generated params");
         GeneratedParams {
             verifier: ParamsVerifier::read(&bytes[..]).expect("read generated verifier params"),

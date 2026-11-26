@@ -1852,7 +1852,7 @@ impl Relation for IrSource {
             .unwrap_or_else(|err| {
                 error!("Ill-typed circuit: {err}");
                 ZkStdLibArch {
-                    nr_pow2range_cols: 4,
+                    nb_range_check_groups: 1,
                     ..ZkStdLibArch::default()
                 }
             })

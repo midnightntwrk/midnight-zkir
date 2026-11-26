@@ -24,7 +24,12 @@ use group::ff::Field;
 use midnight_circuits::hash::poseidon::PoseidonChip;
 use midnight_circuits::verifier::{Accumulator, AssignedAccumulator, Msm, Point};
 use midnight_curves::Bls12;
-use midnight_proofs::{circuit::Layouter, plonk::Error, poly::PolynomialLabel};
+use midnight_circuits::types::InnerValue;
+use midnight_proofs::{
+    circuit::{Layouter, Value},
+    plonk::Error,
+    poly::PolynomialLabel,
+};
 use midnight_zk_stdlib::ZkStdLib;
 use transient_crypto::curve::outer;
 use transient_crypto::proofs::DeferredAccumulator;
@@ -108,6 +113,49 @@ pub fn accumulate_incircuit(
     Ok(acc)
 }
 
+/// The mask `randomize_accumulator` accumulates `acc` with: `acc` multiplied
+/// by `factor`.
+fn mask(acc: &Accumulator<Bls12>, factor: outer::Scalar) -> Accumulator<Bls12> {
+    let side = |msm: Msm<Bls12>| {
+        Msm::new(
+            &[Point::Variable(msm.eval(&Default::default()) * factor)],
+            &[outer::Scalar::ONE],
+            &[PolynomialLabel::NoLabel],
+        )
+    };
+    Accumulator::new(side(acc.lhs()), side(acc.rhs()))
+}
+
+/// Off-circuit `randomize_accumulator`.
+pub fn randomize_offcircuit(
+    acc: DeferredAccumulator,
+    factor: outer::Scalar,
+) -> anyhow::Result<DeferredAccumulator> {
+    let mask = from_accumulator(&mask(&to_accumulator(acc), factor))
+        .ok_or_else(|| anyhow!("a mask failed to collapse"))?;
+    accumulate_offcircuit(&[mask, acc])
+}
+
+/// In-circuit counterpart of [`randomize_offcircuit`].
+pub fn randomize_incircuit(
+    std: &ZkStdLib,
+    layouter: &mut impl Layouter<outer::Scalar>,
+    acc: &AssignedAccumulator<Bls12>,
+    factor: Value<outer::Scalar>,
+) -> Result<AssignedAccumulator<Bls12>, Error> {
+    check_collapsed(acc)?;
+    let value = acc.value().zip(factor).map(|(acc, r)| mask(&acc, r));
+    let bls = std.bls12_381();
+    let mask = AssignedAccumulator::assign_collapsed(
+        layouter,
+        bls,
+        bls.scalar_field_chip(),
+        &[],
+        value,
+    )?;
+    accumulate_incircuit(std, layouter, &[mask, acc.clone()])
+}
+
 /// Tracks that each accumulator is consumed exactly once, by `accumulate` or
 /// `verify_accumulator`: a dropped one is an unchecked proof.
 #[derive(Default)]
@@ -160,6 +208,7 @@ impl I {
         match self {
             I::PrepareVerification { output, .. }
             | I::Accumulate { output, .. }
+            | I::RandomizeAccumulator { output, .. }
             | I::PrivateInput {
                 val_t: IrType::Accumulator,
                 output,
@@ -205,6 +254,7 @@ impl IrSource {
                 I::Accumulate { inputs, .. } => {
                     inputs.iter().try_for_each(|op| accs.consume(op))?
                 }
+                I::RandomizeAccumulator { input, .. } => accs.consume(input)?,
                 I::VerifyAccumulator { input } => accs.consume(input)?,
                 _ => {}
             }
@@ -219,6 +269,48 @@ impl IrSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Randomising keeps a valid accumulator valid and an invalid one invalid,
+    /// and hides which accumulator it started from.
+    #[test]
+    fn randomizing_preserves_validity() {
+        use group::{Curve, Group};
+        use midnight_proofs::poly::kzg::params::ParamsKZG;
+        use rand::{SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x7a);
+        let params = ParamsKZG::<Bls12>::unsafe_setup(1, &mut rng);
+        let verifier = params.verifier_params();
+        // Over the domain {1, -1}: `G = L_0 + L_1` and `tau G = L_0 - L_1`.
+        let [l0, l1] = [params.g_lagrange()[0], params.g_lagrange()[1]].map(midnight_curves::G1Projective::from);
+        let (g, tau_g) = ((l0 + l1).to_affine(), (l0 - l1).to_affine());
+        let check = |acc: DeferredAccumulator| {
+            to_accumulator(acc).check(&verifier, &Default::default())
+        };
+        let valid = [
+            DeferredAccumulator { lhs: g, rhs: tau_g },
+            DeferredAccumulator { lhs: tau_g, rhs: g },
+        ]
+        .into_iter()
+        .find(|acc| check(*acc))
+        .expect("one orientation of (G, tau G) pairs");
+        let invalid = DeferredAccumulator {
+            lhs: valid.lhs,
+            rhs: (midnight_curves::G1Projective::from(valid.rhs) + midnight_curves::G1Projective::generator()).to_affine(),
+        };
+        assert!(!check(invalid));
+
+        for factor in [outer::Scalar::from(3u64), outer::Scalar::from(0u64)] {
+            let randomized = randomize_offcircuit(valid, factor).unwrap();
+            assert!(check(randomized));
+            assert_ne!(randomized, valid);
+            assert!(!check(randomize_offcircuit(invalid, factor).unwrap()));
+        }
+        assert_ne!(
+            randomize_offcircuit(valid, outer::Scalar::from(3u64)).unwrap(),
+            randomize_offcircuit(valid, outer::Scalar::from(4u64)).unwrap()
+        );
+    }
 
     #[test]
     fn accumulation_needs_two_accumulators() {

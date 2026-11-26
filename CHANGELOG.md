@@ -4,6 +4,8 @@
 
 ### ZKIR 4: a new major version
 
+- feat: `randomize_accumulator { input, factor, output }` multiplies an accumulator by a random factor: it witnesses the mask `factor * input` and accumulates it with `input`, so the result pairs iff `input` does. The `ir-instruction[v4]` tag decomposition changes.
+
 This release was first planned as a ZKIR 3.x minor version (3.3), and is
 instead ZKIR 4. Its IR is not compatible with ZKIR 3, so this crate handles
 ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.

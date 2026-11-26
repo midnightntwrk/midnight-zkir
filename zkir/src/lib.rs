@@ -22,6 +22,6 @@ pub mod ir_vm;
 pub mod testing;
 mod type_inference;
 
-pub use ir::{Identifier, Instruction, IrSource};
-pub use ir_instructions::unbound_vk::vk_id;
+pub use ir::{Identifier, InnerShape, Instruction, IrSource};
+pub use ir_instructions::unbound_vk::{inner_circuit_vk_id, preimage_inner_vks, vk_id};
 pub use ir_vm::Preprocessed;

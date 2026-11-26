@@ -157,7 +157,9 @@ impl TypeMemory {
                 self.insert(output, IrType::Bytes(n));
             }
 
-            I::PrepareVerification { output, .. } | I::Accumulate { output, .. } => {
+            I::PrepareVerification { output, .. }
+            | I::Accumulate { output, .. }
+            | I::RandomizeAccumulator { output, .. } => {
                 self.insert(output, IrType::Accumulator)
             }
             I::AssignUnboundVk { output, .. } => self.insert(output, IrType::UnboundVk),

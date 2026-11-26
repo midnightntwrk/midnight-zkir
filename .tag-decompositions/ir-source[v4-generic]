@@ -1,1 +1,1 @@
-((ir-minor-version[v4],vec(zkir-typed-identifier[v2]),vec(ir-type[v2]),bool,vec(ir-instruction[v4]),vec(vec(u8))))
+((ir-minor-version[v4],vec(zkir-typed-identifier[v2]),vec(ir-type[v2]),bool,vec(ir-instruction[v4]),vec(vec(u8)),option(zkir-inner-shape[v1])))

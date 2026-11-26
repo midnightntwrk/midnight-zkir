@@ -103,6 +103,7 @@ impl ParamsProverProvider for TestParams {
 fn make_preimage(inputs: Vec<Fr>, communications_commitment: Option<(Fr, Fr)>) -> ProofPreimage {
     ProofPreimage {
         inner_proofs: vec![],
+        inner_vks: vec![],
         binding_input: BINDING.into(),
         communications_commitment,
         inputs,

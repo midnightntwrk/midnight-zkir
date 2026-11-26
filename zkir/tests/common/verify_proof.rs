@@ -106,6 +106,7 @@ pub fn preimage_with(inner_proofs: Vec<InnerProofWitness>) -> ProofPreimage {
         public_transcript_inputs: vec![],
         public_transcript_outputs: vec![],
         inner_proofs,
+        inner_vks: vec![],
         key_location: KeyLocation(Cow::Borrowed("builtin")),
     }
 }

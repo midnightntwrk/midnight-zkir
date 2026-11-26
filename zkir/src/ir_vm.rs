@@ -12,7 +12,8 @@
 // limitations under the License.
 
 use crate::ir_instructions::accumulate::{
-    accumulate_incircuit, accumulate_offcircuit, check_collapsed,
+    accumulate_incircuit, accumulate_offcircuit, check_collapsed, randomize_incircuit,
+    randomize_offcircuit,
 };
 use crate::ir_instructions::add::{add_incircuit, add_offcircuit};
 use crate::ir_instructions::assign::assign_incircuit;
@@ -252,6 +253,7 @@ impl IrSource {
     ) -> Result<Preprocessed, ProvingError> {
         self.validate_inner_proofs()?;
         self.check_accumulator_lifecycle()?;
+        self.validate_inner_accumulators()?;
         let private_vks = self.validate_private_vks()?;
         let inner_vks = self.resolve_inner_vks()?;
         let slots = self.inner_vk_slots();
@@ -964,6 +966,18 @@ impl IrSource {
                     let acc = accumulate_offcircuit(&accs)?;
                     memory.insert(output.clone(), IrValue::Accumulator(acc));
                 }
+                I::RandomizeAccumulator {
+                    input,
+                    factor,
+                    output,
+                } => {
+                    let acc = DeferredAccumulator::try_from(resolve_operand(&memory, input)?)?;
+                    let IrValue::Native(factor) = resolve_operand(&memory, factor)? else {
+                        bail!("`randomize_accumulator` takes a Native factor, got {factor:?}");
+                    };
+                    let acc = randomize_offcircuit(acc, factor.0)?;
+                    memory.insert(output.clone(), IrValue::Accumulator(acc));
+                }
                 I::VerifyAccumulator { input } => {
                     let acc = DeferredAccumulator::try_from(resolve_operand(&memory, input)?)?;
                     acc_pis.extend(acc.as_public_input().into_iter().map(Fr));
@@ -1084,6 +1098,8 @@ impl Relation for IrSource {
         self.validate_inner_proofs()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
         self.check_accumulator_lifecycle()
+            .map_err(|e| Error::Synthesis(e.to_string()))?;
+        self.validate_inner_accumulators()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
         let private_vks = self
             .validate_private_vks()
@@ -1882,6 +1898,23 @@ impl Relation for IrSource {
                     let acc = accumulate_incircuit(std, layouter, &accs)?;
                     mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
                 }
+                I::RandomizeAccumulator {
+                    input,
+                    factor,
+                    output,
+                } => {
+                    let acc: AssignedAccumulator<_> =
+                        resolve_operand(std, layouter, &memory, input)?.try_into()?;
+                    let CircuitValue::Native(factor) =
+                        resolve_operand(std, layouter, &memory, factor)?
+                    else {
+                        return Err(Error::Synthesis(
+                            "`randomize_accumulator` takes a Native factor".into(),
+                        ));
+                    };
+                    let acc = randomize_incircuit(std, layouter, &acc, factor.value().copied())?;
+                    mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
+                }
                 // Constrained inline, so the accumulator block leads the
                 // public inputs (see `acc_offset`).
                 I::VerifyAccumulator { input } => {
@@ -1955,6 +1988,9 @@ impl Relation for IrSource {
     }
 
     fn used_chips(&self) -> ZkStdLibArch {
+        if self.inner.is_some() {
+            return crate::ir_instructions::unbound_vk::INNER_ARCH;
+        }
         // An ill-typed circuit cannot be synthesized anyway (`circuit` fails),
         // so the architecture we return in that case is irrelevant.
         self.types_pass()

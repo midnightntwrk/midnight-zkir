@@ -192,7 +192,7 @@ The binary tag of `VkRef` is `zkir-vk-ref[v1]`.
 
 ### 3.3 Instructions
 
-ZKIR 4 appends six instructions to `Instruction`, in this order. The order
+ZKIR 4 appends seven instructions to `Instruction`, in this order. The order
 defines the binary layout (`ir-instruction[v4]`).
 
 ```
@@ -207,10 +207,13 @@ Instruction ::= ...v3 instructions...
                           nb_public_inputs : u32, output : Identifier }
   | BindVk              { guard : Operand, vk : Operand, hash : Operand,
                           output : Identifier }
+  | RandomizeAccumulator { input : Operand, factor : Operand,
+                           output : Identifier }
 ```
 
 The JSON `op` names are `prepare_verification`, `inner_proof`, `accumulate`,
-`verify_accumulator`, `assign_unbound_vk` and `bind_vk`.
+`verify_accumulator`, `assign_unbound_vk`, `bind_vk` and
+`randomize_accumulator`.
 
 ---
 
@@ -422,6 +425,31 @@ Let `n` be the `nb_public_inputs` of the `assign_unbound_vk` that produces
 **Relation.** If the guard is `1`, the witnessed key has `vk_id(key, n) =
 hash`. If the guard is `0`, nothing about the key is constrained.
 
+
+### 5.7 `RandomizeAccumulator { input, factor, output }`
+
+**Preprocess.** Resolve `input` to an `Accumulator` and `factor` to a
+`Native` `r`. Compute the mask `r * input` (each side multiplied by `r`).
+Accumulate the mask and `input`, in that order, as `accumulate` does. Bind
+`output` to the result, which is `(r + h) * input` for the accumulation
+challenge `h`.
+
+**In-circuit.**
+
+- Witness the mask as a collapsed accumulator. It is not constrained.
+- Accumulate the mask and `input`, as `accumulate` does, and collapse the
+  result.
+
+**Relation.** The pairing equation of `output` holds if and only if it holds
+for `input` (subject to the trust base, §10.6). The challenge `h` is a
+Poseidon hash of both the mask and `input`, so no mask can cancel an invalid
+`input`. For an honest prover with a uniformly random `r`, `output` is a
+uniformly random multiple of `input`, so it reveals nothing about the proof
+that `input` defers.
+
+**Lifecycle.** The instruction consumes `input` and produces `output`
+(§6.2).
+
 ---
 
 ## 6. Static validation
@@ -440,10 +468,11 @@ instruction. A violation is an error.
 
 ### 6.2 Accumulator lifecycle (`check_accumulator_lifecycle`)
 
-An accumulator is produced by `prepare_verification`, `accumulate`, a circuit
-input of type `Accumulator`, or `private_input`, `public_input` or
+An accumulator is produced by `prepare_verification`, `accumulate`,
+`randomize_accumulator`, a circuit input of type `Accumulator`, or `private_input`, `public_input` or
 `load_constant` of type `Accumulator`. Each accumulator must be consumed
-exactly once, by `accumulate` or `verify_accumulator`. Thus no accumulator is
+exactly once, by `accumulate`, `randomize_accumulator` or
+`verify_accumulator`. Thus no accumulator is
 dropped, and none is counted twice.
 
 An accumulator that is not produced by `prepare_verification` or

@@ -36,6 +36,7 @@ use midnight_proofs::{
 };
 use midnight_zk_stdlib::{KZG, MidnightVK, ZkStdLib, ZkStdLibArch};
 use transient_crypto::curve::Fr;
+use transient_crypto::proofs::{InnerVkWitness, ProofPreimage, VerifierKey};
 
 use crate::{
     ir::{Identifier, Instruction as I, IrSource, Operand, VkRef},
@@ -306,6 +307,48 @@ impl<'a> PrivateVks<'a> {
     }
 }
 
+/// Reads the key of an inner circuit from the raw bytes of a
+/// [`VerifierKey`]: its accumulator count, which must be zero, then its
+/// `MidnightVK`. Returns the `MidnightVK` bytes.
+fn inner_key_blob(raw: &[u8]) -> anyhow::Result<&[u8]> {
+    let (count, blob) = raw
+        .split_first_chunk::<4>()
+        .ok_or_else(|| anyhow!("inner verifying key too short for its accumulator count"))?;
+    if u32::from_le_bytes(*count) != 0 {
+        bail!("the key of an inner circuit must expect no accumulators");
+    }
+    Ok(blob)
+}
+
+/// The `vk_id` of the key of an inner circuit, as keygen of an
+/// [`IrSource`] with an [`InnerShape`](crate::ir::InnerShape) returns it.
+pub fn inner_circuit_vk_id(vk: &VerifierKey) -> anyhow::Result<Fr> {
+    fixed_vk_id(inner_key_blob(&vk.original_bytes())?)
+}
+
+/// The keys a preimage supplies for the `AssignUnboundVk` instructions of a
+/// circuit, in [`IrSource::check_with_inner_vks`]'s form.
+pub fn preimage_inner_vks(
+    preimage: &ProofPreimage,
+) -> anyhow::Result<Vec<Option<InnerVerifyingKey>>> {
+    preimage
+        .inner_vks
+        .iter()
+        .map(|witness| match witness {
+            InnerVkWitness::Absent => Ok(None),
+            InnerVkWitness::Direct(raw) => {
+                let mut blob = inner_key_blob(raw)?;
+                let vk = MidnightVK::<KZG>::read(&mut blob, SerdeFormat::Processed)
+                    .map_err(|e| anyhow!("reading an inner verifying key: {e}"))?;
+                if !blob.is_empty() {
+                    bail!("trailing bytes in an inner verifying key");
+                }
+                Ok(Some(vk.vk().clone()))
+            }
+        })
+        .collect()
+}
+
 impl IrSource {
     /// The number of keys [`IrSource::check_with_inner_vks`] and
     /// [`IrSource::prove_with_inner_vks`] take: one per `AssignUnboundVk`.
@@ -314,6 +357,34 @@ impl IrSource {
             .iter()
             .filter(|i| matches!(i, I::AssignUnboundVk { .. }))
             .count()
+    }
+
+    /// Rejects an inner circuit with accumulators: the circuit that verifies
+    /// its proofs cannot run their pairing checks.
+    pub(crate) fn validate_inner_accumulators(&self) -> anyhow::Result<()> {
+        if self.inner.is_some() && self.accumulator_count() != 0 {
+            bail!("an inner circuit cannot verify proofs itself");
+        }
+        Ok(())
+    }
+
+    /// Rejects an inner circuit that does not fit its declared size.
+    pub(crate) fn validate_inner_shape(&self) -> anyhow::Result<()> {
+        let Some(shape) = self.inner else {
+            return Ok(());
+        };
+        self.validate_inner_accumulators()?;
+        if shape.k == 0 {
+            bail!("an inner circuit must have a positive size");
+        }
+        let needed = midnight_zk_stdlib::cost_model::<_, KZG>(self, Some(shape.k.into()), false).k;
+        if needed > u32::from(shape.k) {
+            bail!(
+                "the inner circuit needs a size of 2^{needed}, but declares 2^{}",
+                shape.k
+            );
+        }
+        Ok(())
     }
 
     /// Rejects malformed private keys: each `BindVk` must bind the output of an

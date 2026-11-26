@@ -26,10 +26,11 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{
-    ParamsProverProvider, Proof, ProofPreimage, ProverKey, ProvingError, TranscriptHash, Zkir,
+    CircuitTranscriptHash, ParamsProverProvider, Proof, ProofPreimage, ProofTarget, ProverKey,
+    ProvingError, TranscriptHash, Zkir,
 };
 
-use crate::ir_instructions::unbound_vk::InnerVerifyingKey;
+use crate::ir_instructions::unbound_vk::{InnerVerifyingKey, preimage_inner_vks};
 use crate::ir_types::IrType;
 
 const PK_COMPRESSION_LEVEL: u32 = 6;
@@ -56,7 +57,25 @@ pub struct IrSource {
     /// `MidnightVK::write(SerdeFormat::Processed)`'s output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inner_vks: Vec<Vec<u8>>,
+    /// Makes this an inner circuit: one whose proofs another circuit verifies
+    /// under a key it takes as a witness. Such a circuit is built with
+    /// [`INNER_ARCH`](crate::ir_instructions::unbound_vk::INNER_ARCH) at the
+    /// given size, and proven over a [`CircuitTranscriptHash`] transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<InnerShape>,
 }
+
+/// The shape of an inner circuit.
+#[cfg_attr(feature = "proptest", derive(Arbitrary))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Serializable)]
+#[tag = "zkir-inner-shape[v1]"]
+pub struct InnerShape {
+    /// The log2 of the circuit's size, which every circuit verifying its
+    /// proofs fixes.
+    pub k: u8,
+}
+
+tag_enforcement_test!(InnerShape);
 
 tag_enforcement_test!(IrSource);
 tag_enforcement_test!(ProverKey<IrSource>);
@@ -127,8 +146,18 @@ impl IrSource {
             .init()
             .map_err(|_| anyhow::anyhow!("Could not init pk"))?;
 
-        let proof =
-            prove::<_, TranscriptHash, KZG>(params_k.as_ref(), &pk, self, &pis, preproc, rng)?;
+        let proof = if self.inner.is_some() {
+            prove::<_, CircuitTranscriptHash, KZG>(
+                params_k.as_ref(),
+                &pk,
+                self,
+                &pis,
+                preproc,
+                rng,
+            )?
+        } else {
+            prove::<_, TranscriptHash, KZG>(params_k.as_ref(), &pk, self, &pis, preproc, rng)?
+        };
 
         // Split the produced PI vector at `N * accumulator_pi_len()`: the head is
         // the accumulator block (one entry per `verify_accumulator` instruction,
@@ -165,7 +194,7 @@ impl Zkir for IrSource {
         &self,
         preimage: &ProofPreimage,
     ) -> std::result::Result<Vec<Option<usize>>, transient_crypto::proofs::ProvingError> {
-        self.check_with_inner_vks(preimage, &[])
+        self.check_with_inner_vks(preimage, &preimage_inner_vks(preimage)?)
     }
 
     async fn prove(
@@ -175,12 +204,23 @@ impl Zkir for IrSource {
         pk: ProverKey<Self>,
         preimage: &ProofPreimage,
     ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
-        self.prove_with_inner_vks(rng, params, pk, preimage, &[])
+        let inner_vks = preimage_inner_vks(preimage)?;
+        self.prove_with_inner_vks(rng, params, pk, preimage, &inner_vks)
             .await
     }
 
     fn k(&self) -> u8 {
-        midnight_zk_stdlib::optimal_k(self) as u8
+        match self.inner {
+            Some(shape) => shape.k,
+            None => midnight_zk_stdlib::optimal_k(self) as u8,
+        }
+    }
+
+    fn target(&self) -> ProofTarget {
+        match self.inner {
+            Some(_) => ProofTarget::Circuit,
+            None => ProofTarget::Node,
+        }
     }
 
     async fn keygen_vk(
@@ -188,6 +228,7 @@ impl Zkir for IrSource {
         params: &impl ParamsProverProvider,
     ) -> Result<transient_crypto::proofs::VerifierKey, anyhow::Error> {
         use midnight_zk_stdlib::setup_vk;
+        self.validate_inner_shape()?;
         let vk = setup_vk::<_, KZG>(params.get_params(self.k()).await?.as_ref(), self);
         Ok(self.verifier_key(vk))
     }
@@ -197,6 +238,7 @@ impl Zkir for IrSource {
         params: &impl ParamsProverProvider,
     ) -> Result<(ProverKey<Self>, transient_crypto::proofs::VerifierKey), anyhow::Error> {
         use midnight_zk_stdlib::{setup_pk, setup_vk};
+        self.validate_inner_shape()?;
         let vk = setup_vk::<_, KZG>(params.get_params(self.k()).await?.as_ref(), self);
         let pk = setup_pk(self, &vk);
         Ok((ProverKey::from_raw(pk), self.verifier_key(vk)))
@@ -1486,6 +1528,30 @@ pub enum Instruction {
         /// The expected `vk_id`, a `Native`.
         hash: Operand,
         /// The output variable name.
+        output: Identifier,
+    },
+    /// Multiplies an `Accumulator` by a random factor, so it reveals nothing
+    /// about the proof it defers.
+    ///
+    /// Off-circuit (preprocessing):
+    /// Computes the mask `factor * input`, and accumulates it with `input`,
+    /// as `Accumulate` does. The result is `(factor + h) * input`, for the
+    /// accumulation challenge `h`.
+    ///
+    /// In-circuit:
+    /// Witnesses the mask, without constraining it, and accumulates it with
+    /// `input`. The result pairs iff `input` does, whatever the mask: the
+    /// challenge `h` is a hash of both, so the mask cannot cancel an invalid
+    /// `input`. An honest prover's result is a uniformly random multiple of
+    /// `input` for a uniformly random `factor`.
+    ///
+    /// One output, the resulting accumulator.
+    RandomizeAccumulator {
+        /// The accumulator to randomise.
+        input: Operand,
+        /// The factor, a `Native` the prover chooses at random.
+        factor: Operand,
+        /// The output variable name (an `Accumulator`).
         output: Identifier,
     },
     //

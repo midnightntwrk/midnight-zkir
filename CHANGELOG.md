@@ -4,6 +4,8 @@
 
 ### ZKIR 4: a new major version
 
+- feat: `randomize_accumulator { input, factor, output }` multiplies an accumulator by a random factor: it witnesses the mask `factor * input` and accumulates it with `input`, so the result pairs iff `input` does. The `ir-instruction[v4]` tag decomposition changes.
+
 This release was first planned as a ZKIR 3.x minor version (3.3), and is
 instead ZKIR 4. Its IR is not compatible with ZKIR 3, so this crate handles
 ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.
@@ -27,6 +29,30 @@ ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.
 - Add the `Accumulator` type and the `accumulate` and `verify_accumulator`
   instructions. `prepare_verification` outputs an accumulator, which must
   reach exactly one `verify_accumulator` (possibly through `accumulate`).
+- Add private verifying keys: the `UnboundVk` and `BoundVk` types and the
+  `assign_unbound_vk` and `bind_vk` instructions. `assign_unbound_vk` witnesses
+  the key of an inner circuit of size `2^k` with every chip enabled, handed
+  over out of band through `IrSource::check_with_inner_vks` and
+  `IrSource::prove_with_inner_vks` (one key per instruction, in instruction
+  order); `bind_vk` binds it to its `vk_id`; and `prepare_verification`
+  verifies a proof under the resulting `BoundVk`. All three share one guard;
+  guarded off, no key is needed.
+- breaking: inner verifying keys are identified by `vk_id`, a domain-separated
+  Poseidon hash of midnight-zk's `vk_hash` and the number of public inputs,
+  for fixed and private keys alike, and `inner_vks` is indexed by `vk_id`.
+- breaking: fixed and private keys have one type, `BoundVk`, and
+  `prepare_verification` takes either as a plain variable, `"vk": "%var"`.
+  `load_constant` of type `BoundVk`, with the single `vk_id` of an entry of
+  `inner_vks` as its encoding, loads a fixed key; `bind_vk` still produces a
+  private one. `VkRef` and its `zkir-vk-ref[v1]` tag are removed, and the
+  `ir-instruction[v4]` tag decomposition changes. The number of public inputs
+  of a fixed key is now checked against the instance of each
+  `prepare_verification` that uses it, as for a private key.
+- breaking: `copy` and `cond_select` reject an `UnboundVk` or `BoundVk`, so a
+  key cannot be copied over a name that the key checks have validated.
+- Add `zkir-spec/docs/zkir-v4-spec.md`, a delta specification of recursive
+  verification in ZKIR 4: accumulators, fixed and private inner keys,
+  `vk_id`, the key interface, and the related producer obligations.
 
 ### Dependencies
 

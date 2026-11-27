@@ -17,22 +17,29 @@
 //! checked before either pass runs.
 //!
 //! Every guard here is a constant `0x00`, which is what keeps these tests fast:
-//! a guarded-off `prepare_verification` returns the trivial accumulator without reading
-//! its verifying key, so the side-table entry can be a stub. Guarded-on
-//! verification needs a real key and a real inner proof, and is covered by
+//! a guarded-off `prepare_verification` returns the trivial accumulator without using
+//! its verifying key, so the side-table entry needs no matching proof.
+//! Guarded-on verification needs a real inner proof, and is covered by
 //! `verify_proof_e2e`.
 
-use std::borrow::Cow;
+#[path = "common/verify_proof.rs"]
+mod verify_proof_common;
 
-use sha2::Digest;
+use std::borrow::Cow;
+use std::sync::OnceLock;
 
 use midnight_zkir::IrSource;
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{InnerProofWitness, KeyLocation, ProofPreimage, Zkir};
 
-/// Stands in for a verifying key. Never parsed, because nothing here is
-/// verified; `inner_vks` is only indexed by digest.
-const STUB_VK: &[u8] = &[0u8, 1, 2, 3];
+use crate::verify_proof_common::{load_vk, scalar_vk_blob, vk_ref};
+
+/// The key every `prepare_verification` here names. `inner_vks` is indexed by
+/// `vk_id`, which only a real key has, but nothing is verified under it.
+fn real_vk() -> &'static [u8] {
+    static VK: OnceLock<Vec<u8>> = OnceLock::new();
+    VK.get_or_init(|| scalar_vk_blob(6))
+}
 
 fn preimage(inner_proofs: Vec<InnerProofWitness>) -> ProofPreimage {
     ProofPreimage {
@@ -43,6 +50,7 @@ fn preimage(inner_proofs: Vec<InnerProofWitness>) -> ProofPreimage {
         public_transcript_inputs: vec![],
         public_transcript_outputs: vec![],
         inner_proofs,
+        inner_vks: vec![],
         key_location: KeyLocation(Cow::Borrowed("builtin")),
     }
 }
@@ -66,10 +74,11 @@ fn inner(name: &str, guard: &str) -> String {
 
 fn verify(name: &str, guard: &str) -> String {
     format!(
-        r#"{{ "op": "prepare_verification", "guard": "{guard}", "vk_hash": "0x{vk}",
-              "instance": [], "proof": "{name}", "output": "{name}_acc" }},
+        r#"{load},
+           {{ "op": "prepare_verification", "guard": "{guard}", "vk": "{name}_vk",
+              "instance": ["0x7b"], "proof": "{name}", "output": "{name}_acc" }},
            {{ "op": "verify_accumulator", "input": "{name}_acc" }}"#,
-        vk = const_hex::encode(sha2::Sha256::digest(STUB_VK)),
+        load = load_vk(&format!("{name}_vk"), &vk_ref(real_vk())),
     )
 }
 
@@ -90,7 +99,7 @@ fn load(instructions: Vec<String>) -> IrSource {
         instructions.join(",\n")
     );
     let mut ir = IrSource::load(ir_json.as_bytes()).expect("IR must parse");
-    ir.inner_vks = vec![STUB_VK.to_vec()];
+    ir.inner_vks = vec![real_vk().to_vec()];
     ir
 }
 

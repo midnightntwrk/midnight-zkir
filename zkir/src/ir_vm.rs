@@ -12,7 +12,8 @@
 // limitations under the License.
 
 use crate::ir_instructions::accumulate::{
-    accumulate_incircuit, accumulate_offcircuit, check_collapsed,
+    accumulate_incircuit, accumulate_offcircuit, check_collapsed, randomize_incircuit,
+    randomize_offcircuit,
 };
 use crate::ir_instructions::add::{add_incircuit, add_offcircuit};
 use crate::ir_instructions::assign::assign_incircuit;
@@ -35,10 +36,15 @@ use crate::ir_instructions::inv::{inv_incircuit, inv_offcircuit};
 use crate::ir_instructions::mul::{mul_incircuit, mul_offcircuit};
 use crate::ir_instructions::neg::{neg_incircuit, neg_offcircuit};
 use crate::ir_instructions::prepare_verification::{
-    prepare_verification_incircuit, prepare_verification_offcircuit,
+    ConstantVk, constant_vk_name, load_constant_vk_incircuit, load_constant_vk_offcircuit,
+    prepare_verification_key_incircuit, prepare_verification_key_offcircuit,
 };
 use crate::ir_instructions::select::{select_incircuit, select_offcircuit};
 use crate::ir_instructions::to_bytes::{to_bytes_incircuit, to_bytes_offcircuit};
+use crate::ir_instructions::unbound_vk::{
+    InnerVerifyingKey, assign_unbound_vk_incircuit, assign_unbound_vk_offcircuit,
+    bind_vk_incircuit, bind_vk_offcircuit,
+};
 use crate::ir_types::{BYTES_PER_FIELD_ELEMENT, CircuitValue, IrType, IrValue, MAX_BYTES_LEN};
 
 use super::ir::{Identifier, Instruction as I, IrSource, Operand};
@@ -235,16 +241,39 @@ fn fab_decode_to_bytes_atom(
     }
 }
 
+fn constant_vk<'a>(
+    inner_vks: &HashMap<Vec<u8>, ConstantVk<'a>>,
+    encoding: &[Fr],
+) -> anyhow::Result<ConstantVk<'a>> {
+    inner_vks
+        .get(&constant_vk_name(encoding)?)
+        .copied()
+        .ok_or_else(|| anyhow!("no verifying key in `inner_vks` for vk_id {encoding:?}"))
+}
+
 impl IrSource {
     /// Performs a non-ZK run of a circuit, to ensure that constraints hold, and
     /// to produce a public input vector, and public input skip information.
-    pub(crate) fn preprocess(
+    /// `supplied_vks` holds the keys of the circuit's `AssignUnboundVk`
+    /// instructions, one per instruction in instruction order.
+    pub(crate) fn preprocess_with_inner_vks(
         &self,
         preimage: &ProofPreimage,
+        supplied_vks: &[Option<InnerVerifyingKey>],
     ) -> Result<Preprocessed, ProvingError> {
         self.validate_inner_proofs()?;
         self.check_accumulator_lifecycle()?;
+        self.validate_inner_accumulators()?;
         let inner_vks = self.resolve_inner_vks()?;
+        let private_vks = self.validate_vks(&inner_vks)?;
+        let slots = self.inner_vk_slots();
+        if supplied_vks.len() != slots {
+            bail!(
+                "Expected {slots} inner verifying keys (one per `assign_unbound_vk`), received {}",
+                supplied_vks.len()
+            );
+        }
+        let mut supplied_vks_idx: usize = 0;
 
         let mut memory: HashMap<Identifier, IrValue> = HashMap::new();
         let mut proofs: HashMap<Identifier, Vec<u8>> = HashMap::new();
@@ -490,6 +519,11 @@ impl IrSource {
                     if let IrValue::Accumulator(_) = val {
                         bail!(
                             "`copy` cannot take an accumulator: each one must be consumed exactly once"
+                        );
+                    }
+                    if let IrValue::UnboundVk(_) | IrValue::BoundVk(_) = val {
+                        bail!(
+                            "`copy` cannot take a verifying key: each one is checked under the name its instruction binds"
                         );
                     }
                     memory.insert(output.clone(), val);
@@ -859,8 +893,35 @@ impl IrSource {
                     encoding,
                     output,
                 } => {
-                    let value = decode_offcircuit(encoding, val_t)?;
+                    let value = if *val_t == IrType::BoundVk {
+                        load_constant_vk_offcircuit(constant_vk(&inner_vks, encoding)?.blob)?
+                    } else {
+                        decode_offcircuit(encoding, val_t)?
+                    };
                     memory.insert(output.clone(), value);
+                }
+                I::AssignUnboundVk {
+                    guard, k, output, ..
+                } => {
+                    let guard = resolve_operand_bool(&memory, guard)?;
+                    let slot = supplied_vks_idx;
+                    supplied_vks_idx += 1;
+                    let vk =
+                        assign_unbound_vk_offcircuit(supplied_vks[slot].as_ref(), slot, *k, guard)?;
+                    memory.insert(output.clone(), vk);
+                }
+                I::BindVk {
+                    guard,
+                    vk,
+                    hash,
+                    output,
+                } => {
+                    let guard = resolve_operand_bool(&memory, guard)?;
+                    let nb_public_inputs = private_vks.unbound_nb_public_inputs(vk)?;
+                    let vk = resolve_operand(&memory, vk)?;
+                    let hash = resolve_operand(&memory, hash)?;
+                    let bound = bind_vk_offcircuit(vk, hash, nb_public_inputs, guard)?;
+                    memory.insert(output.clone(), bound);
                 }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {
@@ -884,7 +945,7 @@ impl IrSource {
                 }
                 I::PrepareVerification {
                     guard,
-                    vk_hash,
+                    vk,
                     instance,
                     proof,
                     output,
@@ -900,14 +961,10 @@ impl IrSource {
                         .get(proof)
                         .ok_or_else(|| anyhow!("not an inner proof: {:?}", proof))?;
 
-                    let vk_blob = inner_vks.get(vk_hash).ok_or_else(|| {
-                        anyhow!(
-                            "no verifying key for vk_hash 0x{}",
-                            const_hex::encode(vk_hash)
-                        )
-                    })?;
-
-                    let acc = prepare_verification_offcircuit(vk_blob, &instance, proof, guard)?;
+                    let IrValue::BoundVk(key) = resolve_operand(&memory, vk)? else {
+                        bail!("`prepare_verification` takes a BoundVk, got {vk:?}");
+                    };
+                    let acc = prepare_verification_key_offcircuit(&key, &instance, proof, guard)?;
                     memory.insert(output.clone(), IrValue::Accumulator(acc));
                 }
                 I::Accumulate { inputs, output } => {
@@ -916,6 +973,18 @@ impl IrSource {
                         .map(|op| DeferredAccumulator::try_from(resolve_operand(&memory, op)?))
                         .collect::<Result<Vec<_>, _>>()?;
                     let acc = accumulate_offcircuit(&accs)?;
+                    memory.insert(output.clone(), IrValue::Accumulator(acc));
+                }
+                I::RandomizeAccumulator {
+                    input,
+                    factor,
+                    output,
+                } => {
+                    let acc = DeferredAccumulator::try_from(resolve_operand(&memory, input)?)?;
+                    let IrValue::Native(factor) = resolve_operand(&memory, factor)? else {
+                        bail!("`randomize_accumulator` takes a Native factor, got {factor:?}");
+                    };
+                    let acc = randomize_offcircuit(acc, factor.0)?;
                     memory.insert(output.clone(), IrValue::Accumulator(acc));
                 }
                 I::VerifyAccumulator { input } => {
@@ -1039,8 +1108,13 @@ impl Relation for IrSource {
             .map_err(|e| Error::Synthesis(e.to_string()))?;
         self.check_accumulator_lifecycle()
             .map_err(|e| Error::Synthesis(e.to_string()))?;
+        self.validate_inner_accumulators()
+            .map_err(|e| Error::Synthesis(e.to_string()))?;
         let inner_vks = self
             .resolve_inner_vks()
+            .map_err(|e| Error::Synthesis(e.to_string()))?;
+        let private_vks = self
+            .validate_vks(&inner_vks)
             .map_err(|e| Error::Synthesis(e.to_string()))?;
 
         let mut input_values = Vec::new();
@@ -1168,6 +1242,15 @@ impl Relation for IrSource {
             Ok(())
         };
 
+        // The value a witness-introducing instruction gave `id` in `preprocess`.
+        let witnessed = |id: &Identifier| {
+            witness.as_ref().map_with_result(|preproc| {
+                preproc.memory.get(id).cloned().ok_or_else(|| {
+                    Error::Synthesis(format!("Output {:?} not found in witness memory", id))
+                })
+            })
+        };
+
         let mut pi_idx: usize = 0;
         pi_push(&mut pi_idx, &mut zkir_pi_cells, binding_input)?;
 
@@ -1241,6 +1324,12 @@ impl Relation for IrSource {
                     if let CircuitValue::Accumulator(_) = val {
                         return Err(Error::Synthesis(
                             "`copy` cannot take an accumulator: each one must be consumed exactly once"
+                                .into(),
+                        ));
+                    }
+                    if let CircuitValue::UnboundVk(_) | CircuitValue::BoundVk(_) = val {
+                        return Err(Error::Synthesis(
+                            "`copy` cannot take a verifying key: each one is checked under the name its instruction binds"
                                 .into(),
                         ));
                     }
@@ -1386,15 +1475,7 @@ impl Relation for IrSource {
                     val_t,
                     output,
                 } => {
-                    let value = witness.as_ref().map_with_result(|preproc| {
-                        preproc.memory.get(output).cloned().ok_or_else(|| {
-                            Error::Synthesis(format!(
-                                "Output {:?} not found in witness memory",
-                                output
-                            ))
-                        })
-                    })?;
-
+                    let value = witnessed(output)?;
                     mem_insert(
                         output.clone(),
                         assign_incircuit(std, layouter, val_t, &[value])?[0].clone(),
@@ -1698,10 +1779,54 @@ impl Relation for IrSource {
                     encoding,
                     output,
                 } => {
-                    let value = decode_offcircuit(encoding, val_t)
-                        .map_err(|e| Error::Synthesis(e.to_string()))?;
-                    let assigned = assign_constant_incircuit(std, layouter, &value)?;
+                    let assigned = if *val_t == IrType::BoundVk {
+                        let constant = constant_vk(&inner_vks, encoding)
+                            .map_err(|e| Error::Synthesis(e.to_string()))?;
+                        load_constant_vk_incircuit(std, layouter, constant.blob)?
+                    } else {
+                        let value = decode_offcircuit(encoding, val_t)
+                            .map_err(|e| Error::Synthesis(e.to_string()))?;
+                        assign_constant_incircuit(std, layouter, &value)?
+                    };
                     mem_insert(output.clone(), assigned, &mut memory)?;
+                }
+                // The guard is enforced by the `BindVk` that binds the key.
+                I::AssignUnboundVk { k, output, .. } => {
+                    let vk = assign_unbound_vk_incircuit(std, layouter, *k, witnessed(output)?)?;
+                    mem_insert(output.clone(), vk, &mut memory)?;
+                }
+                I::BindVk {
+                    guard,
+                    vk,
+                    hash,
+                    output,
+                } => {
+                    let guard: AssignedBit<_> = {
+                        let guard = resolve_operand(std, layouter, &memory, guard)?;
+                        let guard: AssignedNative<_> = guard.try_into()?;
+                        std.convert(layouter, &guard)?
+                    };
+                    let nb_public_inputs = private_vks
+                        .unbound_nb_public_inputs(vk)
+                        .map_err(|e| Error::Synthesis(e.to_string()))?;
+                    let Operand::Variable(vk_id) = vk else {
+                        return Err(Error::Synthesis(
+                            "`bind_vk` takes an UnboundVk variable".into(),
+                        ));
+                    };
+                    let value = witnessed(vk_id)?;
+                    let vk = resolve_operand(std, layouter, &memory, vk)?;
+                    let hash = resolve_operand(std, layouter, &memory, hash)?;
+                    let bound = bind_vk_incircuit(
+                        std,
+                        layouter,
+                        vk,
+                        value,
+                        hash,
+                        nb_public_inputs,
+                        &guard,
+                    )?;
+                    mem_insert(output.clone(), bound, &mut memory)?;
                 }
                 I::Output { vals } => {
                     if vals.len() != self.outputs.len() {
@@ -1725,7 +1850,7 @@ impl Relation for IrSource {
                 }
                 I::PrepareVerification {
                     guard,
-                    vk_hash,
+                    vk,
                     instance,
                     proof,
                     output,
@@ -1747,17 +1872,16 @@ impl Relation for IrSource {
                         Error::Synthesis(format!("not an inner proof: {proof:?}"))
                     })?;
 
-                    let vk_blob = inner_vks.get(vk_hash).ok_or_else(|| {
-                        Error::Synthesis(format!(
-                            "no verifying key for vk_hash 0x{}",
-                            const_hex::encode(vk_hash)
-                        ))
-                    })?;
-
-                    let acc = prepare_verification_incircuit(
+                    let CircuitValue::BoundVk(key) = resolve_operand(std, layouter, &memory, vk)?
+                    else {
+                        return Err(Error::Synthesis(format!(
+                            "`prepare_verification` takes a BoundVk, got {vk:?}"
+                        )));
+                    };
+                    let acc = prepare_verification_key_incircuit(
                         std,
                         layouter,
-                        vk_blob,
+                        &key,
                         &assigned_instance,
                         proof_value,
                         &guard,
@@ -1770,6 +1894,23 @@ impl Relation for IrSource {
                         .map(|op| resolve_operand(std, layouter, &memory, op)?.try_into())
                         .collect::<Result<Vec<_>, Error>>()?;
                     let acc = accumulate_incircuit(std, layouter, &accs)?;
+                    mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
+                }
+                I::RandomizeAccumulator {
+                    input,
+                    factor,
+                    output,
+                } => {
+                    let acc: AssignedAccumulator<_> =
+                        resolve_operand(std, layouter, &memory, input)?.try_into()?;
+                    let CircuitValue::Native(factor) =
+                        resolve_operand(std, layouter, &memory, factor)?
+                    else {
+                        return Err(Error::Synthesis(
+                            "`randomize_accumulator` takes a Native factor".into(),
+                        ));
+                    };
+                    let acc = randomize_incircuit(std, layouter, &acc, factor.value().copied())?;
                     mem_insert(output.clone(), CircuitValue::Accumulator(acc), &mut memory)?;
                 }
                 // Constrained inline, so the accumulator block leads the
@@ -1845,6 +1986,9 @@ impl Relation for IrSource {
     }
 
     fn used_chips(&self) -> ZkStdLibArch {
+        if self.inner.is_some() {
+            return crate::ir_instructions::unbound_vk::INNER_ARCH;
+        }
         // An ill-typed circuit cannot be synthesized anyway (`circuit` fails),
         // so the architecture we return in that case is irrelevant.
         self.types_pass()

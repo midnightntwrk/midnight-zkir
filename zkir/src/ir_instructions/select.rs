@@ -44,7 +44,7 @@ use crate::{
 ///
 /// Returns an error if `a` and `b` do not have the same type.
 pub fn select_offcircuit(bit: bool, a: &IrValue, b: &IrValue) -> Result<IrValue, anyhow::Error> {
-    if a.get_type() != b.get_type() {
+    if a.get_type() != b.get_type() || matches!(a, IrValue::UnboundVk(_) | IrValue::BoundVk(_)) {
         return Err(anyhow::anyhow!(
             "Unsupported cond_select: {:?} ? {:?}",
             a.get_type(),

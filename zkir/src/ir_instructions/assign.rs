@@ -167,5 +167,13 @@ pub fn assign_incircuit(
                 .map(CircuitValue::Accumulator)
             })
             .collect(),
+
+        IrType::UnboundVk => Err(Error::Synthesis(
+            "an UnboundVk can only be assigned with AssignUnboundVk".into(),
+        )),
+
+        IrType::BoundVk => Err(Error::Synthesis(
+            "a BoundVk can only be produced by BindVk or LoadConstant".into(),
+        )),
     }
 }

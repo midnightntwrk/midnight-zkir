@@ -44,9 +44,9 @@ impl TypeMemory {
         self.arch.secp256k1 |= matches!(t, Secp256k1Point | Secp256k1Base | Secp256k1Scalar);
         self.arch.p256 |= matches!(t, Secp256r1Point | Secp256r1Base | Secp256r1Scalar);
         self.arch.curve25519 |= matches!(t, Curve25519Point | Curve25519Base | Curve25519Scalar);
-        // Accumulators live on the in-circuit verifier.
-        self.arch.bls12_381 |= matches!(t, Accumulator);
-        self.arch.poseidon |= matches!(t, Accumulator);
+        // Accumulators and verifying keys live on the in-circuit verifier.
+        self.arch.bls12_381 |= matches!(t, Accumulator | UnboundVk | BoundVk);
+        self.arch.poseidon |= matches!(t, Accumulator | UnboundVk | BoundVk);
         self.types.insert(id.clone(), t);
     }
 
@@ -157,9 +157,13 @@ impl TypeMemory {
                 self.insert(output, IrType::Bytes(n));
             }
 
-            I::PrepareVerification { output, .. } | I::Accumulate { output, .. } => {
+            I::PrepareVerification { output, .. }
+            | I::Accumulate { output, .. }
+            | I::RandomizeAccumulator { output, .. } => {
                 self.insert(output, IrType::Accumulator)
             }
+            I::AssignUnboundVk { output, .. } => self.insert(output, IrType::UnboundVk),
+            I::BindVk { output, .. } => self.insert(output, IrType::BoundVk),
 
             // The output of `InnerProof` is a proof, not an IR value.
             I::InnerProof { .. }

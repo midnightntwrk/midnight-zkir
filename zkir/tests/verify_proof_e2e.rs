@@ -77,8 +77,8 @@ use transient_crypto::proofs::{
 };
 
 use crate::verify_proof_common::{
-    BINDING_INPUT, InnerProof, inner_setup_at, inner_setup_for, load_ir, preimage_with,
-    prove_inner_for, scalar_inner_proof, scalar_inner_proofs, srs, test_rng, vk_hash_hex, with_vks,
+    BINDING_INPUT, InnerProof, inner_setup_at, inner_setup_for, load_ir, load_vk, preimage_with,
+    prove_inner_for, scalar_inner_proof, scalar_inner_proofs, srs, test_rng, vk_ref, with_vks,
 };
 
 // ---------------------------------------------------------------------------
@@ -640,10 +640,9 @@ async fn valid_proof_of_other_statement_is_rejected() {
     );
 }
 
-/// An `instance` of the wrong length for its key is rejected. Neither `check`
-/// nor proving checks the length, so only the pairing catches it.
+/// An `instance` of the wrong length for its key is rejected statically: the
+/// fixed key declares its number of public inputs.
 #[actix_rt::test]
-#[ignore = "slow: builds and proves a high-k outer circuit"]
 async fn wrong_length_instance_is_rejected() {
     let mut rng = test_rng();
     let inner = rsa_inner_proof(&mut rng).await;
@@ -652,30 +651,17 @@ async fn wrong_length_instance_is_rejected() {
         "truncating must not reduce to an empty instance"
     );
 
-    // One element short. Too long would need another keygen and fails the
-    // same way.
-    let instance = inner.pis[..inner.pis.len() - 1].to_vec();
-    let ir = outer_ir_for(&inner.vk_blob, &instance);
-
-    let (pk, vk) = outer_keygen(&ir, "wrong-length instance, one short").await;
-    let stage = expect_rejected(
-        &ir,
-        pk,
-        &vk,
-        &inner.vk_blob,
-        &instance,
-        inner.proof.clone(),
-        &mut rng,
-    )
-    .await;
-    assert_eq!(
-        stage,
-        Rejection::AtPairing,
-        "both passes agree on the wrong length, so only the pairing can refuse it"
-    );
-
-    ir.check(&outer_preimage(inner.proof.clone()))
-        .expect("check does not validate the instance length");
+    for instance in [
+        inner.pis[..inner.pis.len() - 1].to_vec(),
+        [inner.pis.clone(), vec![inner.pis[0]]].concat(),
+    ] {
+        let ir = outer_ir_for(&inner.vk_blob, &instance);
+        let err = match ir.check(&outer_preimage(inner.proof.clone())) {
+            Ok(_) => panic!("check unexpectedly accepted {} inputs", instance.len()),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(err.contains("public inputs"), "{err}");
+    }
 }
 
 /// An inner proof that defers nothing of its own.
@@ -1125,9 +1111,10 @@ fn verify_and_expose(
 ) -> String {
     let verify = |instance: &[String]| {
         format!(
-            r#"{{ "op": "prepare_verification", "guard": "{guard}", "vk_hash": "0x{hash}",
+            r#"{load},
+               {{ "op": "prepare_verification", "guard": "{guard}", "vk": "%k_{i}",
                   "instance": [{ops}], "proof": "%p_{i}", "output": "%a_{i}" }}"#,
-            hash = vk_hash_hex(vk_blob),
+            load = load_vk(&format!("%k_{i}"), &vk_ref(vk_blob)),
             ops = instance.join(", "),
         )
     };

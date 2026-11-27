@@ -19,31 +19,36 @@
 //! running its pairing check) lives in `transient-crypto`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
+use group::Group;
 use midnight_circuits::hash::poseidon::PoseidonState;
 use midnight_circuits::instructions::AssignmentInstructions;
 use midnight_circuits::types::{AssignedBit, AssignedNative};
 use midnight_circuits::verifier::{
-    Accumulator, AssignedAccumulator, InCircuitTranscript, fixed_bases,
+    Accumulator, AssignedAccumulator, AssignedVk, InCircuitTranscript, fixed_bases,
 };
-use midnight_curves::Bls12;
+use midnight_curves::{Bls12, G1Projective};
 use midnight_proofs::{
     circuit::{Layouter, Value},
     plonk::{self, Error},
+    poly::PolynomialLabel,
     transcript::{CircuitTranscript, Transcript},
     utils::SerdeFormat,
 };
 use midnight_zk_stdlib::{KZG, MidnightVK, ZkStdLib};
-use sha2::{Digest, Sha256};
-use transient_crypto::curve::outer;
+use transient_crypto::curve::{Fr, outer};
 use transient_crypto::proofs::DeferredAccumulator;
 
 use crate::ir::{Identifier, Instruction as I, IrSource, Operand};
 use crate::ir_instructions::accumulate::{from_accumulator, trivial_accumulator};
+use crate::ir_instructions::unbound_vk::{InnerVerifyingKey, fixed_vk_info};
+use crate::ir_types::{AssignedBoundKey, BoundKey, CircuitValue, InnerVk, IrType, IrValue};
 
-/// Off-circuit half of `prepare_verification`: partially verifies the inner proof and
-/// returns the accumulator the check defers, resolved and collapsed.
+/// Off-circuit half of `prepare_verification` on a fixed key: partially
+/// verifies the inner proof and returns the accumulator the check defers,
+/// resolved and collapsed.
 ///
 /// If `guard` is `false` neither key nor proof is read and the trivial
 /// accumulator is returned.
@@ -56,12 +61,81 @@ pub fn prepare_verification_offcircuit(
     if !guard {
         return Ok(trivial_accumulator());
     }
+    let IrValue::BoundVk(key) = load_constant_vk_offcircuit(vk_blob)? else {
+        unreachable!("a constant key loads as a BoundVk");
+    };
+    prepare_verification_key_offcircuit(&key, instance, proof, guard)
+}
 
+pub fn prepare_verification_key_offcircuit(
+    key: &BoundKey,
+    instance: &[outer::Scalar],
+    proof: &[u8],
+    guard: bool,
+) -> anyhow::Result<DeferredAccumulator> {
+    if !guard {
+        return Ok(trivial_accumulator());
+    }
+    let bases = if key.constant {
+        fixed_bases::<Bls12, KZG>(&key.vk.0)
+    } else {
+        bound_bases()
+    };
+    prepare_offcircuit(&key.vk.0, &bases, instance, proof)
+}
+
+pub fn load_constant_vk_offcircuit(vk_blob: &[u8]) -> anyhow::Result<IrValue> {
     let vk = MidnightVK::<KZG>::read(&mut &vk_blob[..], SerdeFormat::Processed)
         .map_err(|e| anyhow!("reading inner verifying key: {e}"))?;
-    let plonk_vk = vk.vk();
-    let bases = fixed_bases::<Bls12, KZG>(plonk_vk);
+    Ok(IrValue::BoundVk(BoundKey {
+        vk: InnerVk(Arc::new(vk.vk().clone())),
+        constant: true,
+    }))
+}
 
+pub fn load_constant_vk_incircuit(
+    std: &ZkStdLib,
+    layouter: &mut impl Layouter<outer::Scalar>,
+    vk_blob: &[u8],
+) -> Result<CircuitValue, Error> {
+    let vk = MidnightVK::<KZG>::read(&mut &vk_blob[..], SerdeFormat::Processed)
+        .map_err(|e| Error::Synthesis(format!("inner verifying key: {e}")))?;
+    let plonk_vk = vk.vk();
+
+    // Only `transcript_repr` enters the transcript, but it cannot disagree
+    // with the key: `MidnightVK::read` never reads it, `VerifyingKey::from_parts`
+    // recomputes it from the commitments, domain and cs parsed here, the same
+    // ones the fixed bases below are taken from.
+    let assigned_vk = std.verifier::<KZG>().assign_fixed_vk(
+        layouter,
+        plonk_vk.get_domain(),
+        plonk_vk.cs(),
+        plonk_vk.transcript_repr(),
+    )?;
+    Ok(CircuitValue::BoundVk(AssignedBoundKey {
+        vk: assigned_vk,
+        bases: fixed_bases::<Bls12, KZG>(plonk_vk),
+    }))
+}
+
+/// The bases of a bound key's accumulator that are circuit constants: only the
+/// negated generator the KZG opening introduces, the key's own commitments
+/// being witnessed.
+pub(crate) fn bound_bases() -> BTreeMap<PolynomialLabel, G1Projective> {
+    BTreeMap::from([(
+        PolynomialLabel::Custom("-G".into()),
+        -G1Projective::generator(),
+    )])
+}
+
+/// Partially verifies `proof` under `plonk_vk`, and resolves `bases` in the
+/// accumulator it leaves.
+fn prepare_offcircuit(
+    plonk_vk: &InnerVerifyingKey,
+    bases: &BTreeMap<PolynomialLabel, G1Projective>,
+    instance: &[outer::Scalar],
+    proof: &[u8],
+) -> anyhow::Result<DeferredAccumulator> {
     let mut transcript = CircuitTranscript::<PoseidonState<outer::Scalar>>::init_from_bytes(proof);
     let dual_msm =
         plonk::prepare::<outer::Scalar, KZG, CircuitTranscript<PoseidonState<outer::Scalar>>>(
@@ -73,8 +147,8 @@ pub fn prepare_verification_offcircuit(
             &mut transcript,
         )?;
 
-    let mut acc = Accumulator::from_dual_msm(dual_msm, &bases);
-    acc.resolve_fixed_bases(&bases);
+    let mut acc = Accumulator::from_dual_msm(dual_msm, bases);
+    acc.resolve_fixed_bases(bases);
     acc.collapse();
 
     from_accumulator(&acc)
@@ -94,29 +168,43 @@ pub fn prepare_verification_incircuit(
     proof: Value<Vec<u8>>,
     guard: &AssignedBit<outer::Scalar>,
 ) -> Result<AssignedAccumulator<Bls12>, Error> {
-    let vk = MidnightVK::<KZG>::read(&mut &vk_blob[..], SerdeFormat::Processed)
-        .map_err(|e| Error::Synthesis(format!("inner verifying key: {e}")))?;
-    let plonk_vk = vk.vk();
+    let CircuitValue::BoundVk(key) = load_constant_vk_incircuit(std, layouter, vk_blob)? else {
+        unreachable!("a constant key loads as a BoundVk");
+    };
+    prepare_verification_key_incircuit(std, layouter, &key, instance, proof, guard)
+}
+
+pub fn prepare_verification_key_incircuit(
+    std: &ZkStdLib,
+    layouter: &mut impl Layouter<outer::Scalar>,
+    key: &AssignedBoundKey,
+    instance: &[AssignedNative<outer::Scalar>],
+    proof: Value<Vec<u8>>,
+    guard: &AssignedBit<outer::Scalar>,
+) -> Result<AssignedAccumulator<Bls12>, Error> {
+    prepare_incircuit(std, layouter, &key.vk, &key.bases, instance, proof, guard)
+}
+
+/// Verifies `proof` under `assigned_vk` in-circuit, resolving `bases` in the
+/// accumulator it leaves, which is trivial if `guard` is `0`.
+fn prepare_incircuit(
+    std: &ZkStdLib,
+    layouter: &mut impl Layouter<outer::Scalar>,
+    assigned_vk: &AssignedVk<outer::Scalar, KZG>,
+    bases: &BTreeMap<PolynomialLabel, G1Projective>,
+    instance: &[AssignedNative<outer::Scalar>],
+    proof: Value<Vec<u8>>,
+    guard: &AssignedBit<outer::Scalar>,
+) -> Result<AssignedAccumulator<Bls12>, Error> {
     let verifier = std.verifier::<KZG>();
     let bls = std.bls12_381();
     let scalar_chip = bls.scalar_field_chip();
 
-    // Only `transcript_repr` enters the transcript, but it cannot disagree
-    // with the key: `MidnightVK::read` never reads it, `VerifyingKey::from_parts`
-    // recomputes it from the commitments, domain and cs parsed here, the same
-    // ones the fixed bases below are taken from.
-    let assigned_vk = verifier.assign_fixed_vk(
-        layouter,
-        plonk_vk.get_domain(),
-        plonk_vk.cs(),
-        plonk_vk.transcript_repr(),
-    )?;
-
-    // Assign the inner VK's fixed bases in-circuit, keyed by the same labels
-    // `fixed_bases` produces.
+    // Assign the constant bases in-circuit, keyed by the same labels as
+    // off-circuit.
     let mut assigned_bases = BTreeMap::new();
-    for (label, base) in fixed_bases::<Bls12, KZG>(plonk_vk) {
-        assigned_bases.insert(label, bls.assign_fixed(layouter, base)?);
+    for (label, base) in bases {
+        assigned_bases.insert(label.clone(), bls.assign_fixed(layouter, *base)?);
     }
 
     // No committed instance, mirroring the off-circuit `prepare`.
@@ -124,7 +212,7 @@ pub fn prepare_verification_incircuit(
     transcript.init_with_proof(layouter, proof)?;
     let mut acc = verifier.prepare(
         layouter,
-        &assigned_vk,
+        assigned_vk,
         &[],
         &[&[], instance],
         &mut transcript,
@@ -207,30 +295,40 @@ impl IrSource {
         proofs.finish()
     }
 
-    /// Indexes [`IrSource::inner_vks`] by digest, so each `PrepareVerification`
-    /// can resolve its key by `vk_hash`.
+    /// Indexes [`IrSource::inner_vks`] by `vk_id`, so each `LoadConstant` of a
+    /// `BoundVk` can resolve its key.
     ///
-    /// Rejects a duplicated blob, and one left unused by every instruction, so
+    /// Rejects a duplicated key, and one left unused by every instruction, so
     /// the side-table stays a canonical set of the keys the circuit needs.
-    pub(crate) fn resolve_inner_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, &[u8]>> {
-        let mut vk_map: HashMap<Vec<u8>, &[u8]> = HashMap::new();
+    pub(crate) fn resolve_inner_vks(&self) -> anyhow::Result<HashMap<Vec<u8>, ConstantVk<'_>>> {
+        let mut vk_map: HashMap<Vec<u8>, ConstantVk<'_>> = HashMap::new();
         for vk_blob in self.inner_vks.iter() {
-            let vk_hash = Sha256::digest(vk_blob).to_vec();
-            if vk_map.insert(vk_hash, vk_blob).is_some() {
+            let (vk_id, nb_public_inputs) = fixed_vk_info(vk_blob)?;
+            let entry = ConstantVk {
+                blob: vk_blob,
+                nb_public_inputs,
+            };
+            if vk_map.insert(vk_id.as_le_bytes(), entry).is_some() {
                 bail!("duplicate verifying key in `inner_vks`");
             }
         }
 
         let mut used = HashSet::new();
         for ins in self.instructions.iter() {
-            if let I::PrepareVerification { vk_hash, .. } = ins {
-                if !vk_map.contains_key(vk_hash) {
+            if let I::LoadConstant {
+                val_t: IrType::BoundVk,
+                encoding,
+                ..
+            } = ins
+            {
+                let vk_id = constant_vk_name(encoding)?;
+                if !vk_map.contains_key(&vk_id) {
                     bail!(
-                        "no verifying key in `inner_vks` for vk_hash 0x{}",
-                        const_hex::encode(vk_hash)
+                        "no verifying key in `inner_vks` for vk_id {}",
+                        serde_json::to_string(&Operand::Immediate(encoding[0])).unwrap_or_default()
                     );
                 }
-                used.insert(vk_hash);
+                used.insert(vk_id);
             }
         }
 
@@ -242,5 +340,21 @@ impl IrSource {
             );
         }
         Ok(vk_map)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ConstantVk<'a> {
+    pub blob: &'a [u8],
+    pub nb_public_inputs: usize,
+}
+
+pub(crate) fn constant_vk_name(encoding: &[Fr]) -> anyhow::Result<Vec<u8>> {
+    match encoding {
+        [vk_id] => Ok(vk_id.as_le_bytes()),
+        _ => bail!(
+            "a constant BoundVk is encoded as its vk_id alone, got {} field elements",
+            encoding.len()
+        ),
     }
 }

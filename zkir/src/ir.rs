@@ -26,9 +26,11 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{
-    ParamsProverProvider, Proof, ProofPreimage, ProverKey, ProvingError, TranscriptHash, Zkir,
+    CircuitTranscriptHash, ParamsProverProvider, Proof, ProofPreimage, ProofTarget, ProverKey,
+    ProvingError, TranscriptHash, Zkir,
 };
 
+use crate::ir_instructions::unbound_vk::{InnerVerifyingKey, preimage_inner_vks};
 use crate::ir_types::IrType;
 
 const PK_COMPRESSION_LEVEL: u32 = 6;
@@ -50,12 +52,30 @@ pub struct IrSource {
     pub do_communications_commitment: bool,
     /// The sequence of instructions to run in-circuit
     pub instructions: Arc<Vec<Instruction>>,
-    /// Full verifying keys for the circuit's `PrepareVerification` instructions.
-    /// Each entry is
+    /// Full verifying keys of the circuit's constant keys, which `LoadConstant`
+    /// of type `BoundVk` loads by `vk_id`. Each entry is
     /// `MidnightVK::write(SerdeFormat::Processed)`'s output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inner_vks: Vec<Vec<u8>>,
+    /// Makes this an inner circuit: one whose proofs another circuit verifies
+    /// under a key it takes as a witness. Such a circuit is built with
+    /// [`INNER_ARCH`](crate::ir_instructions::unbound_vk::INNER_ARCH) at the
+    /// given size, and proven over a [`CircuitTranscriptHash`] transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<InnerShape>,
 }
+
+/// The shape of an inner circuit.
+#[cfg_attr(feature = "proptest", derive(Arbitrary))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Serializable)]
+#[tag = "zkir-inner-shape[v1]"]
+pub struct InnerShape {
+    /// The log2 of the circuit's size, which every circuit verifying its
+    /// proofs fixes.
+    pub k: u8,
+}
+
+tag_enforcement_test!(InnerShape);
 
 tag_enforcement_test!(IrSource);
 tag_enforcement_test!(ProverKey<IrSource>);
@@ -88,28 +108,37 @@ impl IrSource {
     }
 }
 
-impl Zkir for IrSource {
-    type ProverKey = midnight_zk_stdlib::MidnightPK<IrSource, KZG>;
-
-    fn check(
+impl IrSource {
+    /// Checks a proof preimage, as [`Zkir::check`] does, with `inner_vks`
+    /// holding the keys of its `AssignUnboundVk` instructions, as in
+    /// [`IrSource::prove_with_inner_vks`].
+    pub fn check_with_inner_vks(
         &self,
         preimage: &ProofPreimage,
-    ) -> std::result::Result<Vec<Option<usize>>, transient_crypto::proofs::ProvingError> {
-        Ok(self.preprocess(preimage)?.pi_skips)
+        inner_vks: &[Option<InnerVerifyingKey>],
+    ) -> Result<Vec<Option<usize>>, ProvingError> {
+        Ok(self
+            .preprocess_with_inner_vks(preimage, inner_vks)?
+            .pi_skips)
     }
 
-    async fn prove(
+    /// Proves this circuit, as [`Zkir::prove`] does, with `inner_vks` holding the
+    /// keys of its `AssignUnboundVk` instructions, one per instruction in
+    /// instruction order. `None` stands for a key that is not supplied, which
+    /// is only allowed where the instruction is guarded off.
+    pub async fn prove_with_inner_vks(
         &self,
         rng: impl Rng + CryptoRng,
         params: &impl ParamsProverProvider,
         pk: ProverKey<Self>,
         preimage: &ProofPreimage,
+        inner_vks: &[Option<InnerVerifyingKey>],
     ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
         use midnight_zk_stdlib::prove;
         use transient_crypto::proofs::{DeferredAccumulator, accumulator_pi_len};
 
         let params_k = params.get_params(pk.init()?.k()).await?;
-        let preproc = self.preprocess(preimage)?;
+        let preproc = self.preprocess_with_inner_vks(preimage, inner_vks)?;
         let pis = preproc.pis.clone();
         let pi_skips = preproc.pi_skips.clone();
 
@@ -117,8 +146,18 @@ impl Zkir for IrSource {
             .init()
             .map_err(|_| anyhow::anyhow!("Could not init pk"))?;
 
-        let proof =
-            prove::<_, TranscriptHash, KZG>(params_k.as_ref(), &pk, self, &pis, preproc, rng)?;
+        let proof = if self.inner.is_some() {
+            prove::<_, CircuitTranscriptHash, KZG>(
+                params_k.as_ref(),
+                &pk,
+                self,
+                &pis,
+                preproc,
+                rng,
+            )?
+        } else {
+            prove::<_, TranscriptHash, KZG>(params_k.as_ref(), &pk, self, &pis, preproc, rng)?
+        };
 
         // Split the produced PI vector at `N * accumulator_pi_len()`: the head is
         // the accumulator block (one entry per `verify_accumulator` instruction,
@@ -146,9 +185,42 @@ impl Zkir for IrSource {
             pi_skips,
         ))
     }
+}
+
+impl Zkir for IrSource {
+    type ProverKey = midnight_zk_stdlib::MidnightPK<IrSource, KZG>;
+
+    fn check(
+        &self,
+        preimage: &ProofPreimage,
+    ) -> std::result::Result<Vec<Option<usize>>, transient_crypto::proofs::ProvingError> {
+        self.check_with_inner_vks(preimage, &preimage_inner_vks(preimage)?)
+    }
+
+    async fn prove(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        pk: ProverKey<Self>,
+        preimage: &ProofPreimage,
+    ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
+        let inner_vks = preimage_inner_vks(preimage)?;
+        self.prove_with_inner_vks(rng, params, pk, preimage, &inner_vks)
+            .await
+    }
 
     fn k(&self) -> u8 {
-        midnight_zk_stdlib::optimal_k(self) as u8
+        match self.inner {
+            Some(shape) => shape.k,
+            None => midnight_zk_stdlib::optimal_k(self) as u8,
+        }
+    }
+
+    fn target(&self) -> ProofTarget {
+        match self.inner {
+            Some(_) => ProofTarget::Circuit,
+            None => ProofTarget::Node,
+        }
     }
 
     async fn keygen_vk(
@@ -156,6 +228,7 @@ impl Zkir for IrSource {
         params: &impl ParamsProverProvider,
     ) -> Result<transient_crypto::proofs::VerifierKey, anyhow::Error> {
         use midnight_zk_stdlib::setup_vk;
+        self.validate_inner_shape()?;
         let vk = setup_vk::<_, KZG>(params.get_params(self.k()).await?.as_ref(), self);
         Ok(self.verifier_key(vk))
     }
@@ -165,6 +238,7 @@ impl Zkir for IrSource {
         params: &impl ParamsProverProvider,
     ) -> Result<(ProverKey<Self>, transient_crypto::proofs::VerifierKey), anyhow::Error> {
         use midnight_zk_stdlib::{setup_pk, setup_vk};
+        self.validate_inner_shape()?;
         let vk = setup_vk::<_, KZG>(params.get_params(self.k()).await?.as_ref(), self);
         let pk = setup_pk(self, &vk);
         Ok((ProverKey::from_raw(pk), self.verifier_key(vk)))
@@ -1093,13 +1167,19 @@ pub enum Instruction {
     /// is decoded into a typed value; in-circuit that value is baked in with
     /// `assign_fixed`.
     ///
-    /// Supported on every `type`.
+    /// Supported on every `type` but `UnboundVk`.
+    ///
+    /// A `BoundVk` has no encoding: its `encoding` is the single `vk_id` (see
+    /// [`crate::vk_id`]) of a key in [`IrSource::inner_vks`], which is loaded
+    /// with its commitments as circuit constants. The result has the same
+    /// type as the output of `BindVk`, so `PrepareVerification` takes either.
     ///
     /// # Errors
     ///
     /// Errors off-circuit (and fails synthesis in-circuit) if `encoding` is not
     /// a valid, canonical encoding of a value of `type` (wrong number of field
-    /// elements, non-canonical field element, etc.).
+    /// elements, non-canonical field element, etc.), or, for a `BoundVk`, if
+    /// no key in `inner_vks` has that `vk_id`.
     LoadConstant {
         /// The type of the constant
         #[serde(rename = "type")]
@@ -1320,8 +1400,11 @@ pub enum Instruction {
     /// A guarded-off instruction still consumes one `InnerProof` binding,
     /// but never depends on its contents.
     ///
-    /// The VK is fixed circuit data, resolved out-of-band: `vk_hash` binds
-    /// which VK the circuit was compiled against.
+    /// The VK is a `BoundVk` variable, whatever its origin: a constant key
+    /// loaded with `LoadConstant`, or a private key bound with `BindVk`.
+    ///
+    /// WARNING: the key must declare as many public inputs as `instance`
+    /// holds. A key bound with `BindVk` must be bound under the same `guard`.
     ///
     /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
     /// the `InnerProof` instruction that produces `proof`.
@@ -1334,9 +1417,8 @@ pub enum Instruction {
         /// The boolean condition under which the inner proof is verified. A
         /// variable reference, or a `0x`-hex immediate for a constant guard.
         guard: Operand,
-        /// Hash of the inner proof verifying key.
-        #[serde(with = "const_hex::serde")]
-        vk_hash: Vec<u8>,
+        /// The inner proof's verifying key, a `BoundVk` variable.
+        vk: Operand,
         /// The inner proof's public inputs (each of type `Native`).
         instance: Vec<Operand>,
         /// The proof to verify, as bound by an `InnerProof` instruction.
@@ -1385,6 +1467,84 @@ pub enum Instruction {
     VerifyAccumulator {
         /// The accumulator to verify.
         input: Operand,
+    },
+    /// Witnesses the verifying key of an inner circuit of size `2^k` with
+    /// every chip of the standard library enabled (see
+    /// [`crate::ir_instructions::unbound_vk::INNER_ARCH`]), under a guard
+    /// condition.
+    ///
+    /// Off-circuit (preprocessing):
+    /// Takes the next key handed to [`IrSource::check_with_inner_vks`] or
+    /// [`IrSource::prove_with_inner_vks`]: one slot per instruction, in
+    /// instruction order, whatever its guard. Errors if the key is not of size
+    /// `2^k` or not of the `INNER_ARCH` shape. If `guard` is `false` the slot
+    /// is ignored, and a dummy key of the same shape and size is used.
+    ///
+    /// In-circuit:
+    /// The key is a free prover witness, which must be bound with `BindVk`
+    /// before it can be used.
+    ///
+    /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
+    /// the `BindVk` that binds `output`.
+    ///
+    /// One output, the `UnboundVk`.
+    AssignUnboundVk {
+        /// The boolean condition under which the key is supplied.
+        guard: Operand,
+        /// The (constant) log2 of the size of the inner circuit.
+        k: u8,
+        /// The (constant) number of public inputs of the inner circuit, which
+        /// the key's `vk_id` covers.
+        nb_public_inputs: u32,
+        /// The output variable name.
+        output: Identifier,
+    },
+    /// Binds `vk` to `hash`, asserting that `hash` is its `vk_id` (see
+    /// [`crate::vk_id`]) if `guard` is `true`.
+    ///
+    /// WARNING: this only guarantees that `vk` matches `hash`. It is up to the
+    /// caller to guarantee the integrity of `hash`, e.g. by making it public
+    /// with `Impact`, or a constant. Note that a public `hash` reveals which key
+    /// the proof is verified under.
+    ///
+    /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
+    /// the `AssignUnboundVk` that produces `vk`, and of every
+    /// `PrepareVerification` that uses `output`.
+    ///
+    /// One output, the `BoundVk`.
+    BindVk {
+        /// The boolean condition under which the binding is enforced.
+        guard: Operand,
+        /// The `UnboundVk` to bind.
+        vk: Operand,
+        /// The expected `vk_id`, a `Native`.
+        hash: Operand,
+        /// The output variable name.
+        output: Identifier,
+    },
+    /// Multiplies an `Accumulator` by a random factor, so it reveals nothing
+    /// about the proof it defers.
+    ///
+    /// Off-circuit (preprocessing):
+    /// Computes the mask `factor * input`, and accumulates it with `input`,
+    /// as `Accumulate` does. The result is `(factor + h) * input`, for the
+    /// accumulation challenge `h`.
+    ///
+    /// In-circuit:
+    /// Witnesses the mask, without constraining it, and accumulates it with
+    /// `input`. The result pairs iff `input` does, whatever the mask: the
+    /// challenge `h` is a hash of both, so the mask cannot cancel an invalid
+    /// `input`. An honest prover's result is a uniformly random multiple of
+    /// `input` for a uniformly random `factor`.
+    ///
+    /// One output, the resulting accumulator.
+    RandomizeAccumulator {
+        /// The accumulator to randomise.
+        input: Operand,
+        /// The factor, a `Native` the prover chooses at random.
+        factor: Operand,
+        /// The output variable name (an `Accumulator`).
+        output: Identifier,
     },
     //
     // ==================== END OF ZKIR 4 INSTRUCTIONS ====================

@@ -18,11 +18,16 @@ use midnight_circuits::{
         AssignedBit, AssignedByte, AssignedField, AssignedForeignPoint, AssignedNative,
         AssignedNativePoint, AssignedScalarOfNativeCurve, InnerValue,
     },
-    verifier::AssignedAccumulator,
+    verifier::{AssignedAccumulator, AssignedVk, UnboundVk},
 };
-use midnight_curves::Bls12;
+use midnight_curves::{Bls12, G1Projective};
 use midnight_curves::{Fr as JubjubFr, JubjubExtended, JubjubSubgroup, curve25519, k256, p256};
-use midnight_proofs::{circuit::Value, plonk::Error};
+use midnight_proofs::{
+    circuit::Value,
+    plonk::{Error, VerifyingKey},
+    poly::PolynomialLabel,
+};
+use midnight_zk_stdlib::KZG;
 #[cfg(feature = "proptest")]
 use proptest::{
     prelude::{Arbitrary, Strategy},
@@ -31,6 +36,8 @@ use proptest::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serialize::{Deserializable, Serializable, Tagged, tag_enforcement_test};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use transient_crypto::curve::{Fr, outer};
 use transient_crypto::proofs::{DeferredAccumulator, accumulator_pi_len};
 
@@ -116,6 +123,16 @@ pub enum IrType {
     /// A collapsed, fixed-base-resolved KZG accumulator deferred by
     /// `prepare_verification`, whose pairing is checked by the outer verifier.
     Accumulator,
+
+    /// Verifying key of an inner proof, witnessed privately and not yet bound
+    /// to a trusted hash. Only produced by `AssignUnboundVk`, it has no
+    /// encoding.
+    UnboundVk,
+
+    /// Verifying key of an inner proof, ready to verify proofs: a constant key
+    /// loaded with `LoadConstant`, or a private key bound to its `vk_id` with
+    /// `BindVk`. Both have this one type. It has no encoding.
+    BoundVk,
 }
 
 impl IrType {
@@ -144,6 +161,7 @@ impl IrType {
             IrType::Curve25519Scalar => 2,
 
             IrType::Accumulator => accumulator_pi_len(),
+            IrType::UnboundVk | IrType::BoundVk => 0,
         }
     }
 
@@ -227,6 +245,8 @@ impl IrType {
             IrType::Curve25519Base => "Base<Curve25519>".to_string(),
             IrType::Curve25519Scalar => "Scalar<Curve25519>".to_string(),
             IrType::Accumulator => "Accumulator".to_string(),
+            IrType::UnboundVk => "UnboundVk".to_string(),
+            IrType::BoundVk => "BoundVk".to_string(),
         }
     }
 
@@ -250,6 +270,8 @@ impl IrType {
             "Base<Curve25519>" => IrType::Curve25519Base,
             "Scalar<Curve25519>" => IrType::Curve25519Scalar,
             "Accumulator" => IrType::Accumulator,
+            "UnboundVk" => IrType::UnboundVk,
+            "BoundVk" => IrType::BoundVk,
             other => {
                 let inner = other.strip_prefix("Bytes<")?.strip_suffix('>')?;
                 // Reject non-canonical integers: empty, non-digits, or a
@@ -311,6 +333,8 @@ impl IrType {
             IrType::Bytes(_) => 15,
             // ===== ZKIR 4 TYPES =====
             IrType::Accumulator => 16,
+            IrType::UnboundVk => 17,
+            IrType::BoundVk => 18,
         }
     }
 }
@@ -362,6 +386,8 @@ impl Deserializable for IrType {
                     IrType::Bytes(n)
                 }
                 16 => IrType::Accumulator,
+                17 => IrType::UnboundVk,
+                18 => IrType::BoundVk,
                 d => return Err(invalid(format!("unrecognised IrType discriminant: {d}"))),
             },
         )
@@ -374,7 +400,7 @@ impl Tagged for IrType {
     }
 
     fn tag_unique_factor() -> String {
-        format!("[{}(),(),({}),()]", "(),".repeat(13), u32::tag())
+        format!("[{}(),(),({}),(),(),()]", "(),".repeat(13), u32::tag())
     }
 }
 tag_enforcement_test!(IrType);
@@ -400,11 +426,13 @@ impl Arbitrary for IrType {
         // stays uniform over all variants; a new curve family is one more arm
         // weighted by its size.
         prop_oneof![
-            4 => prop_oneof![
+            6 => prop_oneof![
                 Just(IrType::Native),
                 Just(IrType::Bool),
                 Just(IrType::Byte),
                 bytes_len.prop_map(IrType::Bytes),
+                Just(IrType::UnboundVk),
+                Just(IrType::BoundVk),
             ],
             2 => prop_oneof![
                 Just(IrType::JubjubPoint),
@@ -481,7 +509,39 @@ pub enum IrValue {
 
     /// Collapsed, fixed-base-resolved accumulator.
     Accumulator(DeferredAccumulator),
+
+    /// Verifying key of an inner proof.
+    UnboundVk(InnerVk),
+
+    /// Verifying key of an inner proof, constant or bound to its `vk_id`.
+    BoundVk(BoundKey),
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundKey {
+    pub vk: InnerVk,
+    pub constant: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AssignedBoundKey {
+    pub vk: AssignedVk<F, KZG>,
+    pub bases: BTreeMap<PolynomialLabel, G1Projective>,
+}
+
+/// Off-circuit verifying key of an inner proof.
+///
+/// Compared by its transcript representation, which commits to the whole key.
+#[derive(Clone, Debug)]
+pub struct InnerVk(pub Arc<VerifyingKey<F, KZG>>);
+
+impl PartialEq for InnerVk {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.transcript_repr() == other.0.transcript_repr()
+    }
+}
+
+impl Eq for InnerVk {}
 
 impl IrValue {
     pub(crate) fn get_type(&self) -> IrType {
@@ -506,6 +566,8 @@ impl IrValue {
             IrValue::Curve25519Scalar(_) => IrType::Curve25519Scalar,
 
             IrValue::Accumulator(_) => IrType::Accumulator,
+            IrValue::UnboundVk(_) => IrType::UnboundVk,
+            IrValue::BoundVk(_) => IrType::BoundVk,
         }
     }
 
@@ -533,6 +595,11 @@ impl IrValue {
             IrType::Curve25519Scalar => IrValue::Curve25519Scalar(curve25519::Scalar::default()),
 
             IrType::Accumulator => IrValue::Accumulator(trivial_accumulator()),
+            IrType::UnboundVk => IrValue::UnboundVk(InnerVk(Arc::default())),
+            IrType::BoundVk => IrValue::BoundVk(BoundKey {
+                vk: InnerVk(Arc::default()),
+                constant: false,
+            }),
         }
     }
 }
@@ -563,6 +630,8 @@ pub enum CircuitValue {
     Curve25519Scalar(AssignedField<F, curve25519::Scalar, MEP>),
 
     Accumulator(AssignedAccumulator<Bls12>),
+    UnboundVk(UnboundVk<F, KZG>),
+    BoundVk(AssignedBoundKey),
 }
 
 impl CircuitValue {
@@ -594,6 +663,9 @@ impl CircuitValue {
                     from_accumulator(&acc).expect("an assigned accumulator is always collapsed"),
                 )
             }),
+
+            // An in-circuit key does not expose its off-circuit value.
+            CircuitValue::UnboundVk(_) | CircuitValue::BoundVk(_) => Value::unknown(),
         }
     }
 
@@ -619,6 +691,8 @@ impl CircuitValue {
             CircuitValue::Curve25519Scalar(_) => IrType::Curve25519Scalar,
 
             CircuitValue::Accumulator(_) => IrType::Accumulator,
+            CircuitValue::UnboundVk(_) => IrType::UnboundVk,
+            CircuitValue::BoundVk(_) => IrType::BoundVk,
         }
     }
 }
@@ -678,6 +752,8 @@ impl_enum_from_try_from!(IrValue, anyhow::Error, anyhow::Error::msg;
     Curve25519Scalar => curve25519::Scalar,
 
     Accumulator => DeferredAccumulator,
+    UnboundVk => InnerVk,
+    BoundVk => BoundKey,
 );
 
 // Derives implementations, for every basic type T:
@@ -704,6 +780,8 @@ impl_enum_from_try_from!(CircuitValue, Error, Error::Synthesis;
     Curve25519Scalar => AssignedField<F, curve25519::Scalar, MEP>,
 
     Accumulator => AssignedAccumulator<Bls12>,
+    UnboundVk => UnboundVk<F, KZG>,
+    BoundVk => AssignedBoundKey,
 );
 
 #[cfg(test)]
@@ -824,6 +902,8 @@ mod tests {
             IrType::Curve25519Base,
             IrType::Curve25519Scalar,
             IrType::Accumulator,
+            IrType::UnboundVk,
+            IrType::BoundVk,
         ];
 
         // Exhaustiveness guard: adding a variant to `IrType` fails to compile
@@ -845,12 +925,14 @@ mod tests {
                 | IrType::Curve25519Point
                 | IrType::Curve25519Base
                 | IrType::Curve25519Scalar
-                | IrType::Accumulator => {}
+                | IrType::Accumulator
+                | IrType::UnboundVk
+                | IrType::BoundVk => {}
             }
         }
 
-        // The rarest variant is drawn with probability 1/16, so 2048 draws miss
-        // one with probability (15/16)^2048, around 1e-57. `deterministic()` fixes the seed, so this
+        // The rarest variant is drawn with probability 1/18, so 2048 draws miss
+        // one with probability (17/18)^2048, around 1e-51. `deterministic()` fixes the seed, so this
         // does not flake.
         let strategy = IrType::arbitrary();
         let mut runner = TestRunner::deterministic();

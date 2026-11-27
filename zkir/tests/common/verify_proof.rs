@@ -34,9 +34,10 @@ use midnight_zk_stdlib::{
     KZG, MidnightPK, Relation, ZkStdLib, ZkStdLibArch, optimal_k, prove, setup_pk, setup_vk,
 };
 use midnight_zkir::IrSource;
+use midnight_zkir::ir::Operand;
+use midnight_zkir::ir_instructions::unbound_vk::fixed_vk_id;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use sha2::Digest;
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{
     InnerProofWitness, KeyLocation, ParamsProver, ParamsProverProvider, ParamsVerifier,
@@ -46,9 +47,32 @@ use transient_crypto::proofs::{
 /// The binding input every preimage carries, as public input 0.
 pub const BINDING_INPUT: u64 = 99;
 
-/// A VK blob's SHA-256, as hex without `0x`: the `vk_hash` `prepare_verification` stores.
-pub fn vk_hash_hex(vk_blob: &[u8]) -> String {
-    const_hex::encode(sha2::Sha256::digest(vk_blob))
+/// The `vk_id` of the fixed key `vk_blob`, as a quoted immediate.
+pub fn vk_ref(vk_blob: &[u8]) -> String {
+    let id = fixed_vk_id(vk_blob).expect("a real verifying key");
+    serde_json::to_string(&Operand::Immediate(id)).expect("operand serializes")
+}
+
+/// A stand-in `vk_id` `n`, as a quoted immediate, for IR whose keys are never
+/// resolved.
+pub fn stub_vk_ref(n: u64) -> String {
+    serde_json::to_string(&Operand::Immediate(Fr::from(n))).expect("operand serializes")
+}
+
+pub fn load_vk(output: &str, id: &str) -> String {
+    format!(
+        r#"{{ "op": "load_constant", "type": "BoundVk", "encoding": [{id}], "output": "{output}" }}"#
+    )
+}
+
+/// The blob of a [`SingleScalarRelation`] key at size `2^k`, for tests that
+/// need a real key in the side-table but verify nothing under it.
+pub fn scalar_vk_blob(k: u8) -> Vec<u8> {
+    let vk = setup_vk::<_, KZG>(srs().params_for(k).as_ref(), &SingleScalarRelation);
+    let mut vk_blob = Vec::new();
+    vk.write(&mut vk_blob, SerdeFormat::Processed)
+        .expect("serialize inner vk");
+    vk_blob
 }
 
 /// Parses an IR from its JSON parts.
@@ -81,6 +105,7 @@ pub fn preimage_with(inner_proofs: Vec<InnerProofWitness>) -> ProofPreimage {
         public_transcript_inputs: vec![],
         public_transcript_outputs: vec![],
         inner_proofs,
+        inner_vks: vec![],
         key_location: KeyLocation(Cow::Borrowed("builtin")),
     }
 }
@@ -229,7 +254,10 @@ pub fn prove_inner_for<R: Relation + Default>(
     inner_pk: &MidnightPK<R, KZG>,
     inner_srs: &ParamsProver,
     rng: &mut ChaCha20Rng,
-) -> Vec<u8> {
+) -> Vec<u8>
+where
+    R::Error: std::fmt::Debug,
+{
     let t = Instant::now();
     let proof = prove::<R, PoseidonState<Fq>, KZG>(
         inner_srs.as_ref(),

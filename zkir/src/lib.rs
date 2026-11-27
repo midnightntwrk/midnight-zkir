@@ -24,3 +24,8 @@ mod type_inference;
 
 pub use ir::{Identifier, Instruction, IrSource};
 pub use ir_vm::Preprocessed;
+
+#[cfg(test)]
+mod sequential_counter;
+#[cfg(test)]
+mod spec_examples;

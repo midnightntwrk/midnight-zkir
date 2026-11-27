@@ -1,27 +1,18 @@
-# Agda development — toolchain and type-checking
+# Checking the ZKIR specifications
 
-This directory holds the Agda mechanization of ZKIR v3
-([zkir-v3/](zkir-v3/), spec at
-[../docs/zkir-v3-spec.md](../docs/zkir-v3-spec.md)) and the Nix flake
-providing the toolchain (the same one CI uses, via
-[.github/workflows/agda.yml](../../.github/workflows/agda.yml)).
+The repository contains separate Markdown and Agda specifications for each version.
 
-Everything runs from this directory via the flake:
+| Language | Reference | Mechanization |
+| --- | --- | --- |
+| IR 4.0 | [ZKIR v4](../docs/zkir-v4-spec.md) | [Modules and theorem hypotheses](zkir-v4/README.md) |
+| IR 3 | [ZKIR v3](../docs/zkir-v3-spec.md) | [Modules and theorem hypotheses](zkir-v3/README.md) |
+
+Run both aggregate checks with the pinned Agda toolchain used by CI.
 
 ```sh
 cd zkir-spec/src
-nix run .#agda -- zkir-v3/Main.agda    # type-checks the entire development
+nix run .#agda -- --safe zkir-v3/Main.agda
+nix run .#agda -- --safe zkir-v4/Main.agda
 ```
 
-Inside a nix shell (or with a suitable Agda + standard-library setup) the
-bare invocation works from the repository root:
-
-```sh
-agda --safe -i zkir-spec/src zkir-spec/src/zkir-v3/Main.agda
-```
-
-`Main.agda` imports every module, so checking it verifies the whole
-development. `zkir-v3/CircuitFaithfulness.agda` (~4100 lines) is large — a
-cold check can take several minutes. Dependencies are declared in
-[zkir-formal-spec.agda-lib](zkir-formal-spec.agda-lib) (`standard-library`,
-`standard-library-classes`, `standard-library-meta`).
+Each entry point imports its version's entire development.  A cold build takes several minutes.  The flake supplies Agda and the libraries listed in the [Agda project file](zkir-formal-spec.agda-lib).  The [CI workflow](../../.github/workflows/agda.yml) checks both versions when a specification changes.

@@ -8,6 +8,7 @@ ZKIR is the circuit format that the [Compact](https://docs.midnight.network/deve
 
 - `zkir/` — the `midnight-zkir` crate: the IR types, instruction set, and VM, plus the `zkir` CLI binary (behind the `binary` feature) with `compile`, `compile-many`, `mock-compile`, and `mock-compile-many` subcommands for turning `.zkir` files into prover/verifier keys.
 - `zkir-wasm/` — WASM bindings (`midnight-zkir-wasm`) exposing the checker and prover to JavaScript via `wasm-bindgen`.
+- [ZKIR specifications](zkir-spec/src/README.md) — versioned language references and Agda models, including the [IR 4.0 specification](zkir-spec/docs/zkir-v4-spec.md).
 
 ## Building
 

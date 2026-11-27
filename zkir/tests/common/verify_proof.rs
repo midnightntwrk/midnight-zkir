@@ -47,22 +47,21 @@ use transient_crypto::proofs::{
 /// The binding input every preimage carries, as public input 0.
 pub const BINDING_INPUT: u64 = 99;
 
-/// A `prepare_verification` `vk` field naming the fixed key `vk_blob` by its
-/// `vk_id`.
+/// The `vk_id` of the fixed key `vk_blob`, as a quoted immediate.
 pub fn vk_ref(vk_blob: &[u8]) -> String {
     let id = fixed_vk_id(vk_blob).expect("a real verifying key");
-    format!(
-        r#"{{ "fixed": {} }}"#,
-        serde_json::to_string(&Operand::Immediate(id)).expect("operand serializes")
-    )
+    serde_json::to_string(&Operand::Immediate(id)).expect("operand serializes")
 }
 
-/// A `prepare_verification` `vk` field naming a fixed key by the stand-in
-/// `vk_id` `n`, for IR whose keys are never resolved.
+/// A stand-in `vk_id` `n`, as a quoted immediate, for IR whose keys are never
+/// resolved.
 pub fn stub_vk_ref(n: u64) -> String {
+    serde_json::to_string(&Operand::Immediate(Fr::from(n))).expect("operand serializes")
+}
+
+pub fn load_vk(output: &str, id: &str) -> String {
     format!(
-        r#"{{ "fixed": {} }}"#,
-        serde_json::to_string(&Operand::Immediate(Fr::from(n))).expect("operand serializes")
+        r#"{{ "op": "load_constant", "type": "BoundVk", "encoding": [{id}], "output": "{output}" }}"#
     )
 }
 

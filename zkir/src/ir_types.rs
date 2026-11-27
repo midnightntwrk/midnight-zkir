@@ -20,11 +20,12 @@ use midnight_circuits::{
     },
     verifier::{AssignedAccumulator, AssignedVk, UnboundVk},
 };
-use midnight_curves::Bls12;
+use midnight_curves::{Bls12, G1Projective};
 use midnight_curves::{Fr as JubjubFr, JubjubExtended, JubjubSubgroup, curve25519, k256, p256};
 use midnight_proofs::{
     circuit::Value,
     plonk::{Error, VerifyingKey},
+    poly::PolynomialLabel,
 };
 use midnight_zk_stdlib::KZG;
 #[cfg(feature = "proptest")]
@@ -35,6 +36,7 @@ use proptest::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serialize::{Deserializable, Serializable, Tagged, tag_enforcement_test};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use transient_crypto::curve::{Fr, outer};
 use transient_crypto::proofs::{DeferredAccumulator, accumulator_pi_len};
@@ -127,8 +129,9 @@ pub enum IrType {
     /// encoding.
     UnboundVk,
 
-    /// Verifying key of an inner proof, bound to its `vk_id`. Only produced by
-    /// `BindVk`, it has no encoding.
+    /// Verifying key of an inner proof, ready to verify proofs: a constant key
+    /// loaded with `LoadConstant`, or a private key bound to its `vk_id` with
+    /// `BindVk`. Both have this one type. It has no encoding.
     BoundVk,
 }
 
@@ -510,8 +513,20 @@ pub enum IrValue {
     /// Verifying key of an inner proof.
     UnboundVk(InnerVk),
 
-    /// Verifying key of an inner proof, bound to its `vk_id`.
-    BoundVk(InnerVk),
+    /// Verifying key of an inner proof, constant or bound to its `vk_id`.
+    BoundVk(BoundKey),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundKey {
+    pub vk: InnerVk,
+    pub constant: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AssignedBoundKey {
+    pub vk: AssignedVk<F, KZG>,
+    pub bases: BTreeMap<PolynomialLabel, G1Projective>,
 }
 
 /// Off-circuit verifying key of an inner proof.
@@ -581,7 +596,10 @@ impl IrValue {
 
             IrType::Accumulator => IrValue::Accumulator(trivial_accumulator()),
             IrType::UnboundVk => IrValue::UnboundVk(InnerVk(Arc::default())),
-            IrType::BoundVk => IrValue::BoundVk(InnerVk(Arc::default())),
+            IrType::BoundVk => IrValue::BoundVk(BoundKey {
+                vk: InnerVk(Arc::default()),
+                constant: false,
+            }),
         }
     }
 }
@@ -613,7 +631,7 @@ pub enum CircuitValue {
 
     Accumulator(AssignedAccumulator<Bls12>),
     UnboundVk(UnboundVk<F, KZG>),
-    BoundVk(AssignedVk<F, KZG>),
+    BoundVk(AssignedBoundKey),
 }
 
 impl CircuitValue {
@@ -735,6 +753,7 @@ impl_enum_from_try_from!(IrValue, anyhow::Error, anyhow::Error::msg;
 
     Accumulator => DeferredAccumulator,
     UnboundVk => InnerVk,
+    BoundVk => BoundKey,
 );
 
 // Derives implementations, for every basic type T:
@@ -762,7 +781,7 @@ impl_enum_from_try_from!(CircuitValue, Error, Error::Synthesis;
 
     Accumulator => AssignedAccumulator<Bls12>,
     UnboundVk => UnboundVk<F, KZG>,
-    BoundVk => AssignedVk<F, KZG>,
+    BoundVk => AssignedBoundKey,
 );
 
 #[cfg(test)]

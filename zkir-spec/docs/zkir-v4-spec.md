@@ -36,7 +36,7 @@ ZKIR v3 only, and no property in this document is machine-checked.
 | `zkir/src/ir.rs` | §3 (syntax), §7 (key interface) |
 | `zkir/src/ir_types.rs` | §2 (types) |
 | `zkir/src/ir_instructions/unbound_vk.rs` | §4 (`vk_id`), §5.5, §5.6, §6 |
-| `zkir/src/ir_instructions/prepare_verification.rs` | §5.1, §5.2, §6 |
+| `zkir/src/ir_instructions/prepare_verification.rs` | §5.1, §5.2, §5.8, §6 |
 | `zkir/src/ir_instructions/accumulate.rs` | §5.3, §5.4, §6 |
 | `zkir/src/ir_vm.rs` | §5 (preprocess and circuit passes), §8 |
 | `zkir/src/type_inference.rs` | §8.3 (chip selection) |
@@ -90,16 +90,20 @@ check to the outer verifier:
 4. `verify_accumulator` makes an accumulator public. The outer proof carries
    it, and the outer verifier does its pairing check.
 
-The inner key is one of these:
+`prepare_verification` takes its inner key as a variable of type `BoundVk`.
+The key has one of two origins:
 
 - A **fixed key**: circuit data. It is in `IrSource::inner_vks`, and
-  `prepare_verification` names it by its `vk_id` (§4). The key is constant in
-  the outer circuit.
-- A **private key**: a prover witness. `assign_unbound_vk` witnesses it,
-  `bind_vk` binds it to a `vk_id`, and `prepare_verification` uses the
-  resulting `BoundVk`. One outer circuit can verify proofs under any private
-  key of the required shape and size. The prover selects the key at proving
-  time.
+  `load_constant` of type `BoundVk` loads it by its `vk_id` (§4). The key is
+  constant in the outer circuit.
+- A **private key**: a prover witness. `assign_unbound_vk` witnesses it, and
+  `bind_vk` binds it to a `vk_id`. One outer circuit can verify proofs under
+  any private key of the required shape and size. The prover selects the key
+  at proving time.
+
+Both origins give a value of the same type, `BoundVk`. `prepare_verification`
+does not depend on the origin of its key, so a producer can lower one
+verification to the same instruction for either origin.
 
 ---
 
@@ -147,11 +151,24 @@ ZKIR 4 adds three types to the v3 type set (v3 §2.2, §3). Their
 
 ### 2.3 `BoundVk`
 
-- **Off-circuit value:** a verifying key, as for `UnboundVk`.
-- **In-circuit value:** midnight-circuits' `AssignedVk<Fr, KZG>`, returned by
-  `bind_vk_to_hash`.
-- **Origin:** only `bind_vk` produces this type.
-- **Restrictions:** as for `UnboundVk`.
+- **Off-circuit value:** a verifying key, as for `UnboundVk`, and its origin:
+  constant or private.
+- **In-circuit value:** midnight-circuits' `AssignedVk<Fr, KZG>`, and the
+  bases of the key that are circuit constants (§5.2). For a private key,
+  `bind_vk_to_hash` returns the `AssignedVk`. For a fixed key,
+  `assign_fixed_vk` returns it.
+- **Origin:** `bind_vk` (a private key) and `load_constant` of type `BoundVk`
+  (a fixed key, §5.8) produce this type. No other instruction produces it.
+- **Restrictions:** no encoding. It cannot be a circuit input or a transcript
+  input: decoding and `assign` of this type fail. `load_constant` takes a
+  `vk_id`, not an encoding (§5.8). In-circuit, encoding it fails.
+
+The origin of a `BoundVk` changes only the cost of the verification, not its
+meaning. No instruction exposes the origin as a value.
+
+`copy` and `cond_select` reject a value of type `UnboundVk` or `BoundVk`.
+Thus a key has only the name that its producing instruction binds, and the
+checks of §6.3 apply to the key that the name holds.
 
 The in-circuit value of `UnboundVk` and `BoundVk` does not expose an
 off-circuit value: its `value()` is unknown. The off-circuit value is in the
@@ -175,29 +192,14 @@ IrSource ::= ⟨ ...v3 fields...,
 - In JSON, the field is optional. Its default value is the empty list. It is
   not written when it is empty.
 
-### 3.2 `VkRef`
-
-`prepare_verification` refers to its inner key with a `VkRef`:
-
-```
-VkRef ::= Fixed(Operand)   -- JSON: { "fixed": "0x<vk_id>" }
-        | Bound(Operand)   -- JSON: { "bound": "%var" }
-```
-
-- `Fixed(op)`: `op` must be an immediate. Its value is the `vk_id` of an entry
-  of `inner_vks`.
-- `Bound(op)`: `op` must be a variable that a `bind_vk` instruction binds.
-
-The binary tag of `VkRef` is `zkir-vk-ref[v1]`.
-
-### 3.3 Instructions
+### 3.2 Instructions
 
 ZKIR 4 appends seven instructions to `Instruction`, in this order. The order
 defines the binary layout (`ir-instruction[v4]`).
 
 ```
 Instruction ::= ...v3 instructions...
-  | PrepareVerification { guard : Operand, vk : VkRef,
+  | PrepareVerification { guard : Operand, vk : Operand,
                           instance : [Operand], proof : Identifier,
                           output : Identifier }
   | InnerProof          { guard : Operand, output : Identifier }
@@ -214,6 +216,10 @@ Instruction ::= ...v3 instructions...
 The JSON `op` names are `prepare_verification`, `inner_proof`, `accumulate`,
 `verify_accumulator`, `assign_unbound_vk`, `bind_vk` and
 `randomize_accumulator`.
+
+The `vk` of `prepare_verification` is a variable of type `BoundVk`, in JSON
+`"vk": "%var"`. ZKIR 4 also extends the v3 `load_constant` instruction to the
+type `BoundVk` (§5.8).
 
 ---
 
@@ -295,26 +301,24 @@ The instruction emits no constraints. The guard is not used in-circuit.
 - If `bool(guard)` is `false`, bind `output` to the trivial accumulator. The
   key and the proof are not used.
 - If `bool(guard)` is `true`:
-  - Get the inner key: for `Fixed(id)`, the entry of `inner_vks` whose
-    `vk_id` is `id`; for `Bound(b)`, the value of `b`. Fail if there is no
-    such key.
+  - Resolve `vk` to a `BoundVk`. Fail if it is not one.
   - Run the PLONK `prepare` step on `proof` with the Poseidon transcript, with
     no committed instance and with `instance` as the instance column. Fail if
     the proof cannot be read or the step fails.
   - Convert the result to an accumulator, resolve its fixed bases, and
     collapse it. Bind `output` to the result.
 
-**Fixed bases.** The bases that are constant in the outer circuit are:
+**Fixed bases.** The bases that are constant in the outer circuit come with
+the `BoundVk`:
 
 - For a fixed key: all the commitments of the key, and `-G`.
-- For a bound key: only `-G`. The commitments of a private key are witnesses.
+- For a private key: only `-G`. The commitments of a private key are
+  witnesses.
 
 **In-circuit.**
 
 - Convert the guard to an `AssignedBit`. This constrains it to be boolean.
-- Get the in-circuit key: for a fixed key, the key assigned as constants
-  (`assign_fixed_vk`); for a bound key, the `AssignedVk` value of the
-  `BoundVk`.
+- Resolve `vk` to a `BoundVk`: its `AssignedVk` and its constant bases.
 - Run the in-circuit verifier's `prepare` on the proof witness, with a
   Poseidon transcript gadget, no committed instance, and `instance` as the
   instance column.
@@ -450,6 +454,29 @@ that `input` defers.
 **Lifecycle.** The instruction consumes `input` and produces `output`
 (§6.2).
 
+### 5.8 `LoadConstant { type: BoundVk, encoding, output }`
+
+`load_constant` is the v3 instruction. For every other type, it is unchanged.
+For `UnboundVk`, it fails. For `BoundVk`, `encoding` is not an encoding of a
+value: it is the single `vk_id` of an entry of `inner_vks`.
+
+**Preprocess.**
+
+- Fail if `encoding` does not have exactly one element.
+- Get the entry of `inner_vks` whose `vk_id` is that element. Fail if there
+  is no such entry.
+- Bind `output` to the key of the entry, as a fixed `BoundVk`.
+
+**In-circuit.** Assign the key as constants with `assign_fixed_vk`. Bind
+`output` to the result, as a `BoundVk` whose constant bases are all the
+commitments of the key and `-G`.
+
+**Relation.** `output` is the key of the entry. The key is part of the
+circuit, so the prover cannot choose it.
+
+The instruction has no guard. A fixed key used only by guarded-off
+verifications is still loaded.
+
 ---
 
 ## 6. Static validation
@@ -479,18 +506,27 @@ An accumulator that is not produced by `prepare_verification` or
 `accumulate` is not checked in-circuit. Its pairing is still checked by the
 outer verifier, as for every accumulator that reaches `verify_accumulator`.
 
-### 6.3 Private keys (`validate_private_vks`)
+### 6.3 Keys (`validate_vks`)
 
-- Each `assign_unbound_vk` and `bind_vk` binds a fresh name.
+This check runs after §6.4, which gives the number of public inputs of each
+fixed key.
+
+- Each `assign_unbound_vk`, `bind_vk` and `load_constant` of type `BoundVk`
+  binds a fresh name.
 - The `vk` of each `bind_vk` is a variable that an earlier
   `assign_unbound_vk` binds.
 - The `bind_vk` has the same `guard` operand as that `assign_unbound_vk`.
-- The `vk` of each `prepare_verification` with a `Bound` key is a variable
-  that an earlier `bind_vk` binds. A copy of a `BoundVk`, or an `UnboundVk`,
-  is rejected.
-- The `prepare_verification` has the same `guard` operand as that `bind_vk`.
-- `|instance|` of the `prepare_verification` equals the `nb_public_inputs` of
-  the `assign_unbound_vk` that produces the key.
+- The `vk` of each `prepare_verification` is a variable that an earlier
+  `bind_vk` or `load_constant` of type `BoundVk` binds. A copy of a
+  `BoundVk`, an `UnboundVk`, an immediate or a value of another type is
+  rejected.
+- If a `bind_vk` binds the key, the `prepare_verification` has the same
+  `guard` operand as that `bind_vk`. A fixed key has no guard, so any
+  `prepare_verification` can use it.
+- `|instance|` of the `prepare_verification` equals the number of public
+  inputs of the key: the `nb_public_inputs` of the `assign_unbound_vk` that
+  produces a private key, or the number in the `MidnightVK` serialisation of
+  a fixed key.
 
 One `BoundVk` can be used by more than one `prepare_verification`. Each use
 needs its own `inner_proof`.
@@ -500,9 +536,9 @@ needs its own `inner_proof`.
 - Each entry of `inner_vks` must be a valid `MidnightVK` serialisation, so
   that its `vk_id` can be computed.
 - No two entries have the same `vk_id`.
-- The `vk` of each `prepare_verification` with a `Fixed` key is an immediate,
-  and an entry of `inner_vks` has that `vk_id`.
-- Each entry is used by at least one `prepare_verification`.
+- The `encoding` of each `load_constant` of type `BoundVk` has exactly one
+  element, and an entry of `inner_vks` has that `vk_id`.
+- Each entry is loaded by at least one `load_constant`.
 
 ---
 
@@ -675,6 +711,9 @@ In addition to the v3 trust base (v3 §8.6), this document trusts:
   `Bytes(n)`, `Byte`, `Bool`, `Sha512` and related instructions. This
   document does not cover them either.
 - **One shape.** Private keys have only the `INNER_ARCH` shape (§10.4).
+  Fixed keys can have any shape: `load_constant` does not check it. Thus a
+  fixed key that is accepted as a constant can be rejected when it is
+  supplied as a private key.
 - **Dummy key format.** The dummy key (§5.5.2) is built from the
   midnight-proofs key serialisation, version `0x03`. A change of that format
   makes guarded-off proving fail with an error.
@@ -708,7 +747,7 @@ the size of the inner circuit.
       "nb_public_inputs": 1, "output": "%u" },
     { "op": "bind_vk", "guard": "%g", "vk": "%u", "hash": "%h",
       "output": "%b" },
-    { "op": "prepare_verification", "guard": "%g", "vk": { "bound": "%b" },
+    { "op": "prepare_verification", "guard": "%g", "vk": "%b",
       "instance": ["%s"], "proof": "%p", "output": "%a" },
     { "op": "verify_accumulator", "input": "%a" }
   ]
@@ -728,6 +767,13 @@ accumulator is trivial.
 The proof carries `acc`. The returned statement is
 `[binding_input, select(g, h, 0)]`.
 
-For the same circuit with a fixed key, remove the `assign_unbound_vk` and
-`bind_vk` instructions, add the serialised key to `inner_vks`, and use
-`"vk": { "fixed": "0x<vk_id>" }`.
+For the same circuit with a fixed key, add the serialised key to `inner_vks`,
+and replace the `assign_unbound_vk` and `bind_vk` instructions with:
+
+```json
+    { "op": "load_constant", "type": "BoundVk", "encoding": ["0x<vk_id>"],
+      "output": "%b" },
+```
+
+The `prepare_verification` and `verify_accumulator` instructions do not
+change.

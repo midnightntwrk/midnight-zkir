@@ -32,7 +32,7 @@ use midnight_zkir::IrSource;
 use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{InnerProofWitness, KeyLocation, ProofPreimage, Zkir};
 
-use crate::verify_proof_common::{scalar_vk_blob, vk_ref};
+use crate::verify_proof_common::{load_vk, scalar_vk_blob, vk_ref};
 
 /// The key every `prepare_verification` here names. `inner_vks` is indexed by
 /// `vk_id`, which only a real key has, but nothing is verified under it.
@@ -74,10 +74,11 @@ fn inner(name: &str, guard: &str) -> String {
 
 fn verify(name: &str, guard: &str) -> String {
     format!(
-        r#"{{ "op": "prepare_verification", "guard": "{guard}", "vk": {vk},
-              "instance": [], "proof": "{name}", "output": "{name}_acc" }},
+        r#"{load},
+           {{ "op": "prepare_verification", "guard": "{guard}", "vk": "{name}_vk",
+              "instance": ["0x7b"], "proof": "{name}", "output": "{name}_acc" }},
            {{ "op": "verify_accumulator", "input": "{name}_acc" }}"#,
-        vk = vk_ref(real_vk()),
+        load = load_vk(&format!("{name}_vk"), &vk_ref(real_vk())),
     )
 }
 

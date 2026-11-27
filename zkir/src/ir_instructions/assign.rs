@@ -173,7 +173,7 @@ pub fn assign_incircuit(
         )),
 
         IrType::BoundVk => Err(Error::Synthesis(
-            "a BoundVk can only be produced by BindVk".into(),
+            "a BoundVk can only be produced by BindVk or LoadConstant".into(),
         )),
     }
 }

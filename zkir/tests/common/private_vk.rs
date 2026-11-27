@@ -199,14 +199,18 @@ pub fn imm(x: Fr) -> String {
     serde_json::to_string(&Operand::Immediate(x)).expect("operand serializes")
 }
 
-/// A `prepare_verification` `vk` field naming a fixed key by its `vk_id`.
-pub fn fixed_vk(id: Fr) -> String {
-    format!(r#"{{ "fixed": {} }}"#, imm(id))
+/// A `load_constant` of the fixed key named by its `vk_id`, into the `BoundVk`
+/// variable `output`.
+pub fn fixed_vk(output: &str, id: Fr) -> String {
+    format!(
+        r#"{{ "op": "load_constant", "type": "BoundVk", "encoding": [{}], "output": "{output}" }}"#,
+        imm(id)
+    )
 }
 
 /// A `prepare_verification` `vk` field passing a `BoundVk` variable.
 pub fn bound_vk(var: &str) -> String {
-    format!(r#"{{ "bound": "{var}" }}"#)
+    format!(r#""{var}""#)
 }
 
 /// Parses an IR from its inputs and instructions, without a fixed-key side-table.

@@ -125,7 +125,7 @@ pub fn assign_constant_incircuit(
         }
 
         IrValue::UnboundVk(_) | IrValue::BoundVk(_) => Err(Error::Synthesis(
-            "a verifying key cannot be a constant".into(),
+            "a verifying key has no constant encoding".into(),
         )),
     }
 }

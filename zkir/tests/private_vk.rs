@@ -71,7 +71,7 @@ fn private_vk_ir_round_trips() {
         r#""op": "bind_vk""#,
         r#""k": 10"#,
         r#""nb_public_inputs": 1"#,
-        r#""bound": "%b_0""#,
+        r#""vk": "%b_0""#,
     ] {
         assert!(json.contains(expected), "{expected} missing:\n{json}");
     }
@@ -92,17 +92,22 @@ fn fixed_vk_ir_round_trips() {
     let ir = load(
         "",
         &format!(
-            r#"{{ "op": "inner_proof", "guard": "0x00", "output": "%p" }},
-               {{ "op": "prepare_verification", "guard": "0x00", "vk": {vk},
+            r#"{load},
+               {{ "op": "inner_proof", "guard": "0x00", "output": "%p" }},
+               {{ "op": "prepare_verification", "guard": "0x00", "vk": "%k",
                   "instance": ["0x7b"], "proof": "%p", "output": "%a" }},
                {{ "op": "verify_accumulator", "input": "%a" }}"#,
-            vk = fixed_vk(id),
+            load = fixed_vk("%k", id),
         ),
     );
     let json = serde_json::to_string_pretty(&ir).expect("IrSource serializes");
     assert!(
-        json.contains(&format!(r#""fixed": {}"#, imm(id))),
+        json.contains(r#""type": "BoundVk""#) && json.contains(&imm(id)),
         "fixed vk_id missing:\n{json}"
+    );
+    assert!(
+        json.contains(r#""vk": "%k""#),
+        "key operand missing:\n{json}"
     );
     assert!(!json.contains("vk_hash"), "vk_hash is gone:\n{json}");
 }
@@ -432,6 +437,144 @@ fn one_identity_for_fixed_and_private_keys() {
         .expect("the private key binds to the same vk_id");
 }
 
+#[test]
+fn one_verification_takes_a_constant_or_a_bound_key() {
+    let key = key_a();
+    let proof = key.prove(PREIMAGE, &mut test_rng());
+    let verification = format!(
+        r#"{{ "op": "inner_proof", "guard": "0x01", "output": "%p" }},
+           {{ "op": "prepare_verification", "guard": "0x01", "vk": "%k",
+              "instance": [{statement}], "proof": "%p", "output": "%a" }},
+           {{ "op": "verify_accumulator", "input": "%a" }}"#,
+        statement = imm(key.statement(PREIMAGE)),
+    );
+    let preimage = preimage_with(vec![InnerProofWitness::Direct(proof)]);
+
+    let constant = with_vks(
+        load(
+            "",
+            &format!("{},\n{verification}", fixed_vk("%k", key.id())),
+        ),
+        vec![key.blob()],
+    );
+    constant
+        .check(&preimage)
+        .expect("a constant key verifies the proof");
+
+    let bound = load(
+        "",
+        &format!(
+            r#"{{ "op": "assign_unbound_vk", "guard": "0x01", "k": {k}, "nb_public_inputs": 1,
+                  "output": "%u" }},
+               {{ "op": "bind_vk", "guard": "0x01", "vk": "%u", "hash": {hash}, "output": "%k" }},
+               {verification}"#,
+            k = key.k(),
+            hash = imm(key.id()),
+        ),
+    );
+    bound
+        .check_with_inner_vks(&preimage, &[Some(key.plonk_vk())])
+        .expect("a bound key verifies the same proof");
+
+    let tail = |ir: &IrSource| ir.instructions[ir.instructions.len() - 3..].to_vec();
+    assert_eq!(tail(&constant), tail(&bound));
+}
+
+#[test]
+fn a_constant_key_must_match_the_instance_length() {
+    let key = key_a();
+    let ir = with_vks(
+        load(
+            "",
+            &format!(
+                r#"{load},
+                   {{ "op": "inner_proof", "guard": "0x00", "output": "%p" }},
+                   {{ "op": "prepare_verification", "guard": "0x00", "vk": "%k",
+                      "instance": ["0x7b", "0x7c"], "proof": "%p", "output": "%a" }},
+                   {{ "op": "verify_accumulator", "input": "%a" }}"#,
+                load = fixed_vk("%k", key.id()),
+            ),
+        ),
+        vec![key.blob()],
+    );
+    let preimage = preimage_with(vec![InnerProofWitness::Direct(vec![])]);
+    let err = match ir.check(&preimage) {
+        Ok(_) => panic!("check unexpectedly succeeded"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(err.contains("public inputs"), "{err}");
+}
+
+#[test]
+fn a_constant_key_is_encoded_as_its_vk_id_alone() {
+    let key = key_a();
+    let id = imm(key.id());
+    for encoding in [String::new(), format!("{id}, {id}")] {
+        let ir = with_vks(
+            load(
+                "",
+                &format!(
+                    r#"{{ "op": "load_constant", "type": "BoundVk", "encoding": [{encoding}], "output": "%k" }}"#
+                ),
+            ),
+            vec![key.blob()],
+        );
+        let err = match ir.check(&preimage_with(vec![])) {
+            Ok(_) => panic!("check unexpectedly succeeded"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(err.contains("vk_id alone"), "{err}");
+    }
+
+    let unbound = load(
+        "",
+        r#"{ "op": "load_constant", "type": "UnboundVk", "encoding": [], "output": "%u" }"#,
+    );
+    assert!(unbound.check(&preimage_with(vec![])).is_err());
+}
+
+#[test]
+fn a_key_cannot_be_copied_over_a_checked_name() {
+    let key = key_a();
+    let proof = key.prove(PREIMAGE, &mut test_rng());
+    let shadows = [
+        r#"{ "op": "copy", "val": "%b", "output": "%k" }"#,
+        r#"{ "op": "cond_select", "bit": "0x01", "a": "%b", "b": "%b", "output": "%k" }"#,
+    ];
+    for shadow in shadows {
+        let ir = with_vks(
+            load(
+                &input("%h"),
+                &format!(
+                    r#"{load},
+                       {{ "op": "assign_unbound_vk", "guard": "0x00", "k": {k}, "nb_public_inputs": 1,
+                          "output": "%u" }},
+                       {{ "op": "bind_vk", "guard": "0x00", "vk": "%u", "hash": "%h", "output": "%b" }},
+                       {shadow},
+                       {{ "op": "inner_proof", "guard": "0x01", "output": "%p" }},
+                       {{ "op": "prepare_verification", "guard": "0x01", "vk": "%k",
+                          "instance": [{statement}], "proof": "%p", "output": "%a" }},
+                       {{ "op": "verify_accumulator", "input": "%a" }}"#,
+                    load = fixed_vk("%k", key.id()),
+                    k = key.k(),
+                    statement = imm(key.statement(PREIMAGE)),
+                ),
+            ),
+            vec![key.blob()],
+        );
+        let mut preimage = preimage_with(vec![InnerProofWitness::Direct(proof.clone())]);
+        preimage.inputs = vec![Fr::from(0)];
+        let err = match ir.check_with_inner_vks(&preimage, &[None]) {
+            Ok(_) => panic!("{shadow}: a key bound under another guard was verified"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            err.contains("verifying key") || err.contains("cond_select"),
+            "{shadow}: {err}"
+        );
+    }
+}
+
 /// A fixed key named by the SHA-256 of its blob, as before, is not found.
 #[test]
 fn fixed_key_named_by_sha256_is_rejected() {
@@ -481,11 +624,12 @@ fn fixed_verification(key: &PrivateKey) -> String {
 /// [`fixed_verification`], naming the key by `id`.
 fn fixed_verification_as(id: Fr, key: &PrivateKey) -> String {
     format!(
-        r#"{{ "op": "inner_proof", "guard": "0x01", "output": "%p" }},
-           {{ "op": "prepare_verification", "guard": "0x01", "vk": {vk},
+        r#"{load},
+           {{ "op": "inner_proof", "guard": "0x01", "output": "%p" }},
+           {{ "op": "prepare_verification", "guard": "0x01", "vk": "%k",
               "instance": [{statement}], "proof": "%p", "output": "%a" }},
            {{ "op": "verify_accumulator", "input": "%a" }}"#,
-        vk = fixed_vk(id),
+        load = fixed_vk("%k", id),
         statement = imm(key.statement(PREIMAGE)),
     )
 }

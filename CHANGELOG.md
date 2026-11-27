@@ -39,9 +39,17 @@ ZKIR 4 only; ZKIR 3 stays on the `zkir-v3` branch and the 3.x releases.
   guarded off, no key is needed.
 - breaking: inner verifying keys are identified by `vk_id`, a domain-separated
   Poseidon hash of midnight-zk's `vk_hash` and the number of public inputs,
-  for fixed and private keys alike. `prepare_verification` takes
-  `"vk": { "fixed": "0x<vk_id>" }` or `"vk": { "bound": "%var" }` in place of
-  the SHA-256 `vk_hash`, and `inner_vks` is indexed by `vk_id`.
+  for fixed and private keys alike, and `inner_vks` is indexed by `vk_id`.
+- breaking: fixed and private keys have one type, `BoundVk`, and
+  `prepare_verification` takes either as a plain variable, `"vk": "%var"`.
+  `load_constant` of type `BoundVk`, with the single `vk_id` of an entry of
+  `inner_vks` as its encoding, loads a fixed key; `bind_vk` still produces a
+  private one. `VkRef` and its `zkir-vk-ref[v1]` tag are removed, and the
+  `ir-instruction[v4]` tag decomposition changes. The number of public inputs
+  of a fixed key is now checked against the instance of each
+  `prepare_verification` that uses it, as for a private key.
+- breaking: `copy` and `cond_select` reject an `UnboundVk` or `BoundVk`, so a
+  key cannot be copied over a name that the key checks have validated.
 - Add `zkir-spec/docs/zkir-v4-spec.md`, a delta specification of recursive
   verification in ZKIR 4: accumulators, fixed and private inner keys,
   `vk_id`, the key interface, and the related producer obligations.

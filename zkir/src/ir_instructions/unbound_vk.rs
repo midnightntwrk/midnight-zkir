@@ -39,9 +39,12 @@ use transient_crypto::curve::Fr;
 use transient_crypto::proofs::{InnerVkWitness, ProofPreimage, VerifierKey};
 
 use crate::{
-    ir::{Identifier, Instruction as I, IrSource, Operand, VkRef},
-    ir_instructions::F,
-    ir_types::{CircuitValue, InnerVk, IrValue},
+    ir::{Identifier, Instruction as I, IrSource, Operand},
+    ir_instructions::{
+        F,
+        prepare_verification::{ConstantVk, bound_bases, constant_vk_name},
+    },
+    ir_types::{AssignedBoundKey, BoundKey, CircuitValue, InnerVk, IrType, IrValue},
 };
 
 /// The verifying key of an inner proof, as handed to zkir.
@@ -96,6 +99,10 @@ pub fn vk_id(vk: &InnerVerifyingKey, nb_public_inputs: usize) -> Fr {
 /// The `vk_id` of a fixed key, serialized as `MidnightVK::write(Processed)`
 /// outputs it.
 pub fn fixed_vk_id(blob: &[u8]) -> anyhow::Result<Fr> {
+    fixed_vk_info(blob).map(|(id, _)| id)
+}
+
+pub(crate) fn fixed_vk_info(blob: &[u8]) -> anyhow::Result<(Fr, usize)> {
     let vk = MidnightVK::<KZG>::read(&mut &blob[..], SerdeFormat::Processed)
         .map_err(|e| anyhow!("reading verifying key in `inner_vks`: {e}"))?;
     // `MidnightVK` does not expose its number of public inputs: it is the
@@ -106,7 +113,8 @@ pub fn fixed_vk_id(blob: &[u8]) -> anyhow::Result<Fr> {
             .try_into()
             .expect("the slice is 4 bytes long"),
     );
-    Ok(vk_id(vk.vk(), nb_public_inputs as usize))
+    let nb_public_inputs = nb_public_inputs as usize;
+    Ok((vk_id(vk.vk(), nb_public_inputs), nb_public_inputs))
 }
 
 /// The constraint system of an inner circuit of size `2^k`, as configured when
@@ -241,7 +249,10 @@ pub fn bind_vk_offcircuit(
     if guard && vk_id(&vk.0, nb_public_inputs) != hash {
         bail!("`bind_vk`: the verifying key does not match the given hash");
     }
-    Ok(IrValue::BoundVk(vk))
+    Ok(IrValue::BoundVk(BoundKey {
+        vk,
+        constant: false,
+    }))
 }
 
 /// In-circuit half of `bind_vk`: constrains `vk` to have `vk_id` `hash`, if
@@ -277,25 +288,29 @@ pub fn bind_vk_incircuit(
     // Guarded off, the key is compared to its own `vk_id`.
     let expected = std_lib.select(layouter, guard, &hash, &id)?;
     std_lib.assert_equal(layouter, &id, &expected)?;
-    Ok(CircuitValue::BoundVk(vk))
+    Ok(CircuitValue::BoundVk(AssignedBoundKey {
+        vk,
+        bases: bound_bases(),
+    }))
 }
 
-/// Where a private key comes from, as [`IrSource::validate_private_vks`]
-/// traces it.
+/// Where a key comes from, as [`IrSource::validate_vks`] traces it. A
+/// constant key has no guard.
 #[derive(Clone)]
-pub(crate) struct PrivateVkInfo<'a> {
-    pub guard: &'a Operand,
+pub(crate) struct VkInfo<'a> {
+    pub guard: Option<&'a Operand>,
     pub nb_public_inputs: usize,
 }
 
-/// The keys of a circuit's `AssignUnboundVk` and `BindVk` outputs.
+/// The keys of a circuit's `AssignUnboundVk` outputs, and the `BoundVk`
+/// outputs of its `BindVk` and `LoadConstant` instructions.
 #[derive(Default)]
-pub(crate) struct PrivateVks<'a> {
-    pub unbound: HashMap<&'a Identifier, PrivateVkInfo<'a>>,
-    pub bound: HashMap<&'a Identifier, PrivateVkInfo<'a>>,
+pub(crate) struct Vks<'a> {
+    pub unbound: HashMap<&'a Identifier, VkInfo<'a>>,
+    pub bound: HashMap<&'a Identifier, VkInfo<'a>>,
 }
 
-impl<'a> PrivateVks<'a> {
+impl<'a> Vks<'a> {
     /// The number of public inputs the key `vk` declares, if `vk` is the
     /// output of an `AssignUnboundVk`.
     pub fn unbound_nb_public_inputs(&self, vk: &Operand) -> anyhow::Result<usize> {
@@ -387,12 +402,16 @@ impl IrSource {
         Ok(())
     }
 
-    /// Rejects malformed private keys: each `BindVk` must bind the output of an
-    /// earlier `AssignUnboundVk`, and each `PrepareVerification` on a bound key
-    /// must use the output of an earlier `BindVk`, all under the same guard,
-    /// with as many public inputs as the key declares.
-    pub(crate) fn validate_private_vks(&self) -> anyhow::Result<PrivateVks<'_>> {
-        let mut vks = PrivateVks::default();
+    /// Rejects malformed keys: each `BindVk` must bind the output of an
+    /// earlier `AssignUnboundVk`, under the same guard, and each
+    /// `PrepareVerification` must use a `BoundVk` that an earlier `BindVk` or
+    /// `LoadConstant` produces, with as many public inputs as the key
+    /// declares. A key from `BindVk` must be used under its guard.
+    pub(crate) fn validate_vks(
+        &self,
+        constants: &HashMap<Vec<u8>, ConstantVk<'_>>,
+    ) -> anyhow::Result<Vks<'_>> {
+        let mut vks = Vks::default();
         let mut defined = HashSet::new();
         for ins in self.instructions.iter() {
             match ins {
@@ -405,8 +424,8 @@ impl IrSource {
                     if !defined.insert(output) {
                         bail!("{} is bound to more than one key", output.0);
                     }
-                    let info = PrivateVkInfo {
-                        guard,
+                    let info = VkInfo {
+                        guard: Some(guard),
                         nb_public_inputs: *nb_public_inputs as usize,
                     };
                     vks.unbound.insert(output, info);
@@ -422,7 +441,7 @@ impl IrSource {
                         anyhow!("`bind_vk` takes an UnboundVk produced by `assign_unbound_vk`")
                     })?
                     .clone();
-                    if info.guard != guard {
+                    if info.guard != Some(guard) {
                         bail!(
                             "`bind_vk` on {:?} is guarded differently to the `assign_unbound_vk` that produced it",
                             vk
@@ -433,9 +452,30 @@ impl IrSource {
                     }
                     vks.bound.insert(output, info);
                 }
+                I::LoadConstant {
+                    val_t: IrType::BoundVk,
+                    encoding,
+                    output,
+                } => {
+                    let constant =
+                        constants.get(&constant_vk_name(encoding)?).ok_or_else(|| {
+                            anyhow!(
+                                "no verifying key in `inner_vks` for the constant {}",
+                                output.0
+                            )
+                        })?;
+                    if !defined.insert(output) {
+                        bail!("{} is bound to more than one key", output.0);
+                    }
+                    let info = VkInfo {
+                        guard: None,
+                        nb_public_inputs: constant.nb_public_inputs,
+                    };
+                    vks.bound.insert(output, info);
+                }
                 I::PrepareVerification {
                     guard,
-                    vk: VkRef::Bound(vk),
+                    vk,
                     instance,
                     ..
                 } => {
@@ -445,10 +485,10 @@ impl IrSource {
                     }
                     .ok_or_else(|| {
                         anyhow!(
-                            "`prepare_verification` takes a BoundVk produced by `bind_vk`, got {vk:?}"
+                            "`prepare_verification` takes a BoundVk produced by `bind_vk` or `load_constant`, got {vk:?}"
                         )
                     })?;
-                    if info.guard != guard {
+                    if info.guard.is_some_and(|g| g != guard) {
                         bail!(
                             "`prepare_verification` on {vk:?} is guarded differently to the `bind_vk` that produced it"
                         );

@@ -52,8 +52,8 @@ pub struct IrSource {
     pub do_communications_commitment: bool,
     /// The sequence of instructions to run in-circuit
     pub instructions: Arc<Vec<Instruction>>,
-    /// Full verifying keys for the circuit's `PrepareVerification` instructions.
-    /// Each entry is
+    /// Full verifying keys of the circuit's constant keys, which `LoadConstant`
+    /// of type `BoundVk` loads by `vk_id`. Each entry is
     /// `MidnightVK::write(SerdeFormat::Processed)`'s output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inner_vks: Vec<Vec<u8>>,
@@ -470,20 +470,6 @@ impl Tagged for Operand {
     }
 }
 tag_enforcement_test!(Operand);
-
-/// The verifying key a `PrepareVerification` verifies an inner proof under.
-#[cfg_attr(feature = "proptest", derive(Arbitrary))]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Serializable)]
-#[serde(rename_all = "snake_case")]
-#[tag = "zkir-vk-ref[v1]"]
-pub enum VkRef {
-    /// A key fixed in the circuit, carried in [`IrSource::inner_vks`] and named
-    /// by its `vk_id` (see [`crate::vk_id`]), a `0x`-hex immediate.
-    Fixed(Operand),
-    /// A key witnessed privately, as a `BoundVk` variable produced by `BindVk`.
-    Bound(Operand),
-}
-tag_enforcement_test!(VkRef);
 
 /// Serde helpers for the `Constant` instruction's `encoding` field. The
 /// encoding is stored as `Vec<Fr>` but (de)serialized as a list of hex
@@ -1181,13 +1167,19 @@ pub enum Instruction {
     /// is decoded into a typed value; in-circuit that value is baked in with
     /// `assign_fixed`.
     ///
-    /// Supported on every `type`.
+    /// Supported on every `type` but `UnboundVk`.
+    ///
+    /// A `BoundVk` has no encoding: its `encoding` is the single `vk_id` (see
+    /// [`crate::vk_id`]) of a key in [`IrSource::inner_vks`], which is loaded
+    /// with its commitments as circuit constants. The result has the same
+    /// type as the output of `BindVk`, so `PrepareVerification` takes either.
     ///
     /// # Errors
     ///
     /// Errors off-circuit (and fails synthesis in-circuit) if `encoding` is not
     /// a valid, canonical encoding of a value of `type` (wrong number of field
-    /// elements, non-canonical field element, etc.).
+    /// elements, non-canonical field element, etc.), or, for a `BoundVk`, if
+    /// no key in `inner_vks` has that `vk_id`.
     LoadConstant {
         /// The type of the constant
         #[serde(rename = "type")]
@@ -1408,11 +1400,11 @@ pub enum Instruction {
     /// A guarded-off instruction still consumes one `InnerProof` binding,
     /// but never depends on its contents.
     ///
-    /// The VK is either fixed circuit data, named by its `vk_id` and carried
-    /// in [`IrSource::inner_vks`], or a `BoundVk` produced by `BindVk`.
+    /// The VK is a `BoundVk` variable, whatever its origin: a constant key
+    /// loaded with `LoadConstant`, or a private key bound with `BindVk`.
     ///
-    /// WARNING: a bound key must be bound under the same `guard`, and declare
-    /// as many public inputs as `instance` holds.
+    /// WARNING: the key must declare as many public inputs as `instance`
+    /// holds. A key bound with `BindVk` must be bound under the same `guard`.
     ///
     /// WARNING: the `guard` here must be the same `Operand` as the `guard` of
     /// the `InnerProof` instruction that produces `proof`.
@@ -1425,8 +1417,8 @@ pub enum Instruction {
         /// The boolean condition under which the inner proof is verified. A
         /// variable reference, or a `0x`-hex immediate for a constant guard.
         guard: Operand,
-        /// The inner proof's verifying key.
-        vk: VkRef,
+        /// The inner proof's verifying key, a `BoundVk` variable.
+        vk: Operand,
         /// The inner proof's public inputs (each of type `Native`).
         instance: Vec<Operand>,
         /// The proof to verify, as bound by an `InnerProof` instruction.

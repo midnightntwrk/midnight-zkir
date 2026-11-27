@@ -25,8 +25,8 @@ use serialize::{Deserializable, Serializable, tagged_deserialize, tagged_seriali
 use transient_crypto::proofs::{InnerProofWitness, ProofPreimage, Zkir};
 
 use crate::verify_proof_common::{
-    load_ir, preimage_with, scalar_inner_proof, scalar_vk_blob, stub_vk_ref, test_rng, vk_ref,
-    with_vks,
+    load_ir, load_vk, preimage_with, scalar_inner_proof, scalar_vk_blob, stub_vk_ref, test_rng,
+    vk_ref, with_vks,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,6 +50,12 @@ const VERIFY_PROOF_IR: &str = r#"{
    "do_communications_commitment": false,
    "instructions": [
        {
+           "op": "load_constant",
+           "type": "BoundVk",
+           "encoding": ["0x2a"],
+           "output": "%k"
+       },
+       {
            "op": "inner_proof",
            "guard": "%g",
            "output": "%p_0"
@@ -57,7 +63,7 @@ const VERIFY_PROOF_IR: &str = r#"{
        {
            "op": "prepare_verification",
            "guard": "%g",
-           "vk": { "fixed": "0x2a" },
+           "vk": "%k",
            "instance": ["%v_0"],
            "proof": "%p_0",
            "output": "%a_0"
@@ -71,7 +77,7 @@ const VERIFY_PROOF_IR: &str = r#"{
        {
            "op": "prepare_verification",
            "guard": "0x01",
-           "vk": { "fixed": "0x2a" },
+           "vk": "%k",
            "instance": ["%v_0"],
            "proof": "%p_1",
            "output": "%a_1"
@@ -334,8 +340,12 @@ fn verify_proof_text_format_roundtrips() {
     );
     assert!(json.contains("%p_0"), "proof operand missing:\n{json}");
     assert!(
-        json.contains(r#""fixed": "0x2a""#),
+        json.contains(r#""type": "BoundVk""#) && json.contains(r#""0x2a""#),
         "vk_id missing:\n{json}"
+    );
+    assert!(
+        json.contains(r#""vk": "%k""#),
+        "key operand missing:\n{json}"
     );
     assert!(json.contains("%v_0"), "instance operand missing:\n{json}");
 
@@ -453,17 +463,18 @@ fn stub_ref(blob: &[u8]) -> String {
 /// One `inner_proof` / `prepare_verification` pair under `guard`.
 fn guarded_pair(i: usize, guard: &str, blob: &[u8]) -> String {
     format!(
-        r#"{{ "op": "inner_proof", "guard": "{guard}", "output": "%p_{i}" }},
+        r#"{load},
+           {{ "op": "inner_proof", "guard": "{guard}", "output": "%p_{i}" }},
            {{
                "op": "prepare_verification",
                "guard": "{guard}",
-               "vk": {vk},
+               "vk": "%k_{i}",
                "instance": ["0x7b"],
                "proof": "%p_{i}",
                "output": "%a_{i}"
            }},
            {{ "op": "verify_accumulator", "input": "%a_{i}" }}"#,
-        vk = stub_ref(blob),
+        load = load_vk(&format!("%k_{i}"), &stub_ref(blob)),
     )
 }
 
@@ -513,17 +524,21 @@ fn ir_with_vks(instructions: &str, vks: Vec<Vec<u8>>) -> IrSource {
 /// Binds `%p_0..%p_n`, then one `prepare_verification` per hash, into `%a_0..%a_n`.
 /// Each gets a distinct instance so a round-trip that mixed them up would show.
 fn bind_and_prepare(vks: &[String]) -> String {
+    let loads = vks
+        .iter()
+        .enumerate()
+        .map(|(i, h)| load_vk(&format!("%k_{i}"), h));
     let binds = (0..vks.len())
         .map(|i| format!(r#"{{ "op": "inner_proof", "guard": "0x01", "output": "%p_{i}" }}"#))
         .collect::<Vec<_>>();
-    let verifies = vks.iter().enumerate().map(|(i, h)| {
+    let verifies = vks.iter().enumerate().map(|(i, _)| {
         let instance = 0x7b + i;
         format!(
-            r#"{{ "op": "prepare_verification", "guard": "0x01", "vk": {h}, "instance": ["0x{instance:02x}"], "proof": "%p_{i}", "output": "%a_{i}" }}"#
+            r#"{{ "op": "prepare_verification", "guard": "0x01", "vk": "%k_{i}", "instance": ["0x{instance:02x}"], "proof": "%p_{i}", "output": "%a_{i}" }}"#
         )
     });
-    binds
-        .into_iter()
+    loads
+        .chain(binds)
         .chain(verifies)
         .collect::<Vec<_>>()
         .join(",\n")

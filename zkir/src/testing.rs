@@ -68,7 +68,7 @@ impl Relation for Echo {
 /// An inner proof, with what a circuit needs in order to verify it.
 pub struct InnerProof {
     /// The [`IrSource::inner_vks`](crate::IrSource::inner_vks)
-    /// entry the verifying `PrepareVerification` names by its hash.
+    /// entry that `LoadConstant` loads by its `vk_id`.
     pub vk_blob: Vec<u8>,
     /// The proof itself, as an
     /// [`InnerProofWitness`](transient_crypto::proofs::InnerProofWitness).
